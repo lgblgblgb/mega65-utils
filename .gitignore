@@ -4,6 +4,10 @@ dump.mem
 a.out
 uart.sock
 debug.log
+*.prg
 *.o
 *.d81
 *.D81
+*.snap
+/KICKUP.M65
+/sdcard.img
