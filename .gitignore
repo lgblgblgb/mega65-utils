@@ -1,0 +1,9 @@
+.*.swp
+gmon.out
+dump.mem
+a.out
+uart.sock
+debug.log
+*.o
+*.d81
+*.D81
