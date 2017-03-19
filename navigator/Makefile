@@ -1,22 +1,67 @@
-all: navigator.d81
+## System/file navigator for Mega-65
+##
+## Copyright (C)2017 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-navigator.o: navigator.asm Makefile
-	ca65 -t none -o navigator.o navigator.asm
+DISK_IMAGE	= navigator.d81
+PRG		= navigator.prg
+PRG_ON_DISK	= navigator
+SOURCES		= $(shell ls *.asm)
+INCLUDES	=
+OBJECTS		= $(SOURCES:.asm=.o)
+XEMU_SNAPSHOT	= navigator.snap
+KICKUP		= ../KICKUP.M65
+SDIMG		= ../sdcard.img
+SDIMG_GZ	= ../sdcard.img.gz
+LD65_CFG	= navigator.ld
+ALL_DEPENDS	= Makefile
+XEMU_OPTS	= -8 $(DISK_IMAGE) -kickup $(KICKUP) -sdimg $(SDIMG) -kicked 255
+KICKUP_URL	= http://github.lgb.hu/xemu/files/KICKUP.M65
+SDIMG_URL	= http://github.lgb.hu/xemu/files/sd-card-image-for-xemu-xmega65.img.gz
+CA65_OPTS	= -t none
+LD65_OPTS	= -C $(LD65_CFG)
 
-navigator.prg: navigator.o navigator.ld Makefile
-	ld65 -C navigator.ld -o navigator.prg navigator.o
+XEMU_M65	= xemu-xmega65
+C1541		= c1541
+CA65		= ca65
+LD65		= ld65
+WGET		= wget
+RM		= rm
+GUNZIP		= gunzip
 
-navigator.d81: navigator.prg Makefile
-	rm -f navigator.d81
-	echo format navigator,00 d81 navigator.d81 | c1541
-	echo write navigator.prg navigator | c1541 navigator.d81
 
-test: navigator.d81 Makefile ../KICKUP.M65 ../sdcard.img
-	$(MAKE) navigator.snap
-	xemu-xmega65 -8 navigator.d81 -snapload navigator.snap -kickup ../KICKUP.M65 -sdimg ../sdcard.img -kicked 255
+all: $(PRG)
 
-navigator.snap:
-	$(MAKE) navigator.d81
+%.o: %.asm $(ALL_DEPENDS) $(INCLUDES)
+	$(CA65) $(CA65_OPTS) -o $@ $<
+
+$(PRG): $(OBJECTS) $(LD65_CFG) $(ALL_DEPENDS)
+	$(LD65) $(LD65_OPTS) -o $@ $(OBJECTS)
+
+$(DISK_IMAGE): $(PRG) $(ALL_DEPENDS)
+	$(RM) -f $@
+	echo format lgb-test,00 d81 $@ | $(C1541)
+	echo write $(PRG) $(PRG_ON_DISK) | $(C1541) $@
+
+test: $(DISK_IMAGE) $(ALL_DEPENDS) $(KICKUP) $(SDIMG)
+	$(MAKE) $(XEMU_SNAPSHOT)
+	$(XEMU_M65) $(XEMU_OPTS) -snapload $(XEMU_SNAPSHOT)
+
+$(XEMU_SNAPSHOT):
+	$(MAKE) $(DISK_IMAGE)
 	@echo "**** NO Xemu snapshot for testing"
 	@echo "**** We will create one for you."
 	@echo "Please let Xemu/M65 run, and answer for external disk image"
@@ -27,21 +72,24 @@ navigator.snap:
 	@echo "waiting for M65 to boot, or whatever."
 	@echo "**** Please hit ENTER now to proceed the described task"
 	@read some
-	xemu-xmega65 -8 navigator.d81 -snapsave navigator.snap -kickup ../KICKUP.M65 -sdimg ../sdcard.img -kicked 255
+	$(RM) -f $(XEMU_SNAPSHOT)
+	$(XEMU_M65) $(XEMU_OPTS) -snapsave $(XEMU_SNAPSHOT)
 
 clean:
-	rm -f navigator.prg *.o navigator.d81 uart.sock dump.mem debug.log
+	$(RM) -f $(PRG) *.o $(DISK_IMAGE) uart.sock dump.mem debug.log $(SDIMG_GZ)
 
-../KICKUP.M65:
-	wget -O ../KICKUP.M65 http://github.lgb.hu/xemu/files/KICKUP.M65
+$(KICKUP):
+	$(WGET) -O $@ $(KICKUP_URL)
 
-../sdcard.img:
-	wget -O ../sdcard.img.gz http://github.lgb.hu/xemu/files/sd-card-image-for-xemu-xmega65.img.gz
-	gunzip ../sdcard.img.gz
+$(SDIMG):
+	$(RM) -f $(SDIMG_GZ) $(SDIMG)
+	$(WGET) -O $(SDIMG_GZ) $(SDIMG_URL)
+	@echo "*** Extracting SD-card image, this may take a while ..."
+	$(GUNZIP) $(SDIMG_GZ)
 
 distclean:
 	$(MAKE) clean
-	rm -f navigator.snap
+	$(RM) -f $(XEMU_SNAPSHOT) $(KICKUP) $(SDIMG)
 
 .PHONY: all clean distclean test
 
