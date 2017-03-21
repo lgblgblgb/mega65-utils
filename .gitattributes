@@ -2,6 +2,7 @@
 *.h linguist-language=C
 *.cdata linguist-language=C
 *.asm linguist-language=Assembly
+*.inc linguist-language=Assembly
 *.s linguist-language=Assembly
 *.S linguist-language=Assembly
 Makefile.* linguist-language=Makefile

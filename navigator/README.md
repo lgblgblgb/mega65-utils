@@ -1,8 +1,9 @@
 # Mega-65 navigator
 
 This little project wants to be some kind of "file manager" or "file navigator"
-for Mega-65. It's (currently) nothing to do too much with disk images or D81
-files, but rather than the SD-Card of Mega-65 accessed directly. Plans:
+for Mega-65 with also "system configuration" capabilities. It's (currently) nothing
+to do too much with disk images or D81 files, but rather than the SD-Card of Mega-65
+accessed directly. Plans:
 
 * Navigate through the whole SD-Card natively
 * Allows "mounting" D81 images on the SD-Card (however browsing the content inside is another maybe TODO item)

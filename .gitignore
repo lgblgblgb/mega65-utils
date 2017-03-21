@@ -8,6 +8,6 @@ debug.log
 *.o
 *.d81
 *.D81
-*.snap
+xemu-test.snap
 /KICKUP.M65
 /sdcard.img
