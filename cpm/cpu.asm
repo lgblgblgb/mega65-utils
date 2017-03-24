@@ -1,4 +1,5 @@
 ; ----------------------------------------------------------------------------
+;
 ; Software emulator of a 8080 CPU for the Mega-65.
 ;
 ; Copyright (C)2017 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
@@ -27,6 +28,9 @@
 ; **WARNING** The code assumes that Z is zero. If we need to set it to another
 ; value, we must set back to zero ASAP! This rule remains valid throughout
 ; this source file!
+; **WARNING** This 8080 emulation is not fully correct. Surely, not its by
+; timing, but there can be "corner cases" where it fails, ie, wrapping around
+; memory reference at the end of 64K, etc.
 ; *NOTE*: Though this is a 8080 emulator, and not Z80, I still prefer (and
 ; know) Z80 asm syntax better than 8080, so I will use that terminology! Also,
 ; the intent, that some day, maybe this can become a Z80 emulator as well,
@@ -93,6 +97,18 @@ cpu_last:
 	EOM
 	STA	(zploc),Z
 .ENDMACRO
+.MACRO	ORA32Z	zploc
+	EOM
+	STA	(zploc),Z
+.ENDMACRO
+.MACRO	AND32Z	zploc
+	EOM
+	STA	(zploc),Z
+.ENDMACRO
+.MACRO	EOR32Z	zploc
+	EOM
+	STA	(zploc),Z
+.ENDMACRO
 
 ; Stack byte level POP/PUSH primitives
 
@@ -104,7 +120,6 @@ cpu_last:
 	DEW	cpu_sp
 	STA32Z	cpu_sp
 .ENDMACRO
-
 
 ; Stack pop/push register pair
 
@@ -121,35 +136,30 @@ cpu_last:
 	PUSHB
 .ENDMACRO
 
+; Load/store LD ops
 
-
-
-
-.MACRO	opc_LD_R_N target
+.MACRO	OPC_LD_R_N target
 	INW	cpu_pc
 	LDA32Z	cpu_pc
 	STA	z:target
 	JMP	next_inc1
 .ENDMACRO
-
-
-.MACRO	opc_LD_R_R target,source
+.MACRO	OPC_LD_R_R target,source
 	LDA	z:source
 	STA	z:target
 	JMP	next_inc1
 .ENDMACRO
-.MACRO	opc_LD_R_RI reg, regpair
+.MACRO	OPC_LD_R_RI reg, regpair
 	LDA32Z	regpair
 	STA	z:reg
 	JMP	next_inc1
 .ENDMACRO
-.MACRO	opc_LD_RI_R regpair, reg
+.MACRO	OPC_LD_RI_R regpair, reg
 	LDA	z:reg
 	STA32Z	regpair
 	JMP	next_inc1
 .ENDMACRO
-
-.MACRO	opc_LD_RR_NN regpair
+.MACRO	OPC_LD_RR_NN regpair
 	INW	cpu_pc
 	LDA32Z	cpu_pc
 	STA	z:regpair
@@ -158,36 +168,38 @@ cpu_last:
 	STA	z:regpair+1
 	JMP	next_inc1
 .ENDMACRO
-
-.MACRO	opc_LD_RI_N regpair
+.MACRO	OPC_LD_RI_N regpair
 	INW	cpu_pc
 	LDA32Z	cpu_pc
 	STA32Z	regpair
 	JMP	next_inc1
 .ENDMACRO
 
+; Final stack POP/PUSH ops
 
-.MACRO	opc_PUSH_RR regpair
-	PUSH_RP	regpair
+.MACRO	OPC_PUSH_RR regpair
+	PUSH_RR	regpair
+	JMP	next_inc1
+.ENDMACRO
+.MACRO	OPC_POP_RR regpair
+	POP_RR	regpair
 	JMP	next_inc1
 .ENDMACRO
 
-.MACRO	opc_POP_RR regpair
-	POP_RP	regpair
-	JMP	next_inc1
-.ENDMACRO
+; INC/DEC 16 bit registers
 
-.MACRO	opc_INC_RR regpair
+.MACRO	OPC_INC_RR regpair
 	INW	z:regpair
 	JMP	next_inc1
 .ENDMACRO
-.MACRO	opc_DEC_RR regpair
+.MACRO	OPC_DEC_RR regpair
 	DEW	z:regpair
 	JMP	next_inc1
 .ENDMACRO
 
-; Z80ex says: value++; F = ( F & FLAG_C ) | ( (value)==0x80 ? FLAG_V : 0 ) | ( (value)&0x0f ? 0 : FLAG_H ) | sz53_table[(value)];
-.MACRO	opc_INC_R reg
+; INC/DEC 8 bit registers
+
+.MACRO	OPC_INC_R reg
 	LDX	z:reg
 	INX
 	STX	z:reg
@@ -198,8 +210,7 @@ cpu_last:
 	JMP	next_inc1
 .ENDMACRO
 
-; Z80ex says: F = ( F & FLAG_C ) | ( (value)&0x0f ? 0 : FLAG_H ) | FLAG_N; (value)--; F |= ( (value)==0x7f ? FLAG_V : 0 ) | sz53_table[value];
-.MACRO	opc_DEC_R reg
+.MACRO	OPC_DEC_R reg
 	LDX	z:reg
 	DEX
 	STX	z:reg
@@ -208,7 +219,9 @@ cpu_last:
 	JMP	next_inc1
 .ENDMACRO
 
-.MACRO	opc_RST	vector
+; RST "generator"
+
+.MACRO	OPC_RST	vector
 	INW	cpu_pc
 	PUSH_RR	cpu_pc
 	STZ	cpu_pch		; Z must be zero, so high address of PC will be zero
@@ -217,10 +230,8 @@ cpu_last:
 	JMP	next_no_inc
 .ENDMACRO
 
+; Memory pointer helpers (contant memory pointer in opcode to fetch/store data from/to)
 
-
-
-; User needs to use MEMCONSTPTROP_END at the end to restore Z
 .MACRO	MEMCONSTPTROP_BEGIN	; for things like LD ..,(1123)
 	INW	cpu_pc
 	LDA32Z	cpu_pc
@@ -232,6 +243,9 @@ cpu_last:
 .MACRO	MEMCONSTPTROP_END
 	JMP	next_inc1
 .ENDMACRO
+
+; Conditional opcodes related stuffs
+
 .MACRO	BR_SIGN label
 	BBS7    cpu_f, label
 .ENDMACRO
@@ -268,10 +282,22 @@ cpu_last:
 .ENDMACRO
 
 
+.MACRO	OPC_LOGICOP_GEN op,reg
+	LDA	cpu_a
+	op	reg
+	STA	cpu_a
+	TAX
+	LDA	sz53p_table,X
+	STA	cpu_f
+	JMP	next_inc1
+.ENDMACRO
 
 
+; *******************************************************************
+; *** Main opcode fetch, and instruction "decoding" by jump table ***
+; *******************************************************************
 
-; *** Main opcode fetch, and instruction "decoding" by jump table
+
 next_inc3:
 	INW	cpu_pc
 next_inc2:
@@ -279,19 +305,19 @@ next_inc2:
 next_inc1:
 	INW	cpu_pc
 next_no_inc:
-	LDA32Z	cpu_pc
-	ASL	A
-	TAX
-	BCC	@ops_low_half
-	JMP	(opcode_jump_tab+$100,X)
+	LDA32Z	cpu_pc				; fetch opcode byte
+	ASL	A				; multiply by two, since word based table. Old 7th bit is the carry flag now
+	TAX					; prepare for the JMP (nnnn,X) opcode
+	BCC	@ops_low_half			; we have 256 ops, but because of ASL, we must halve their handling (see comment at ASL above about carry)
+	JMP	(opcode_jump_table+$100,X)	; upper half of the opcodes
 @ops_low_half:
-	JMP	(opcode_jump_tab,X)
+	JMP	(opcode_jump_table,X)		; lower half of the opcodes
 
 NO_OP	= next_inc1
 
 
 
-opcode_jump_tab:
+opcode_jump_table:
 	.WORD opc_00,opc_01,opc_02,opc_03,opc_04,opc_05,opc_06,opc_07,opc_08,opc_09,opc_0A,opc_0B,opc_0C,opc_0D,opc_0E,opc_0F
 	.WORD opc_10,opc_11,opc_12,opc_13,opc_14,opc_15,opc_16,opc_17,opc_18,opc_19,opc_1A,opc_1B,opc_1C,opc_1D,opc_1E,opc_1F
 	.WORD opc_20,opc_21,opc_22,opc_23,opc_24,opc_25,opc_26,opc_27,opc_28,opc_29,opc_2A,opc_2B,opc_2C,opc_2D,opc_2E,opc_2F
@@ -375,40 +401,40 @@ opc_RET:
 ; ****************************************************************************
 
 
-opc_00 = NO_OP				; NOP	(no-effect opcodes can refeer for the main opcode fetch entry point itself, simply ...)
-opc_01:	opc_LD_RR_NN	cpu_bc		; LD BC,nn
-opc_02:	opc_LD_RI_R	cpu_bc, cpu_a	; LD (BC),A
-opc_03:	opc_INC_RR	cpu_bc		; INC BC, 8080 syntax: INX B
-opc_04: opc_INC_R	cpu_b		; INC B
-opc_05: opc_DEC_R	cpu_b		; DEC B
-opc_06:	opc_LD_R_N	cpu_b		; LD B,n
-opc_07	= TODO				; RLCA
-opc_08	= NO_OP				; *NON-STANDARD* NOP	[EX AF,AF' on Z80]
-opc_09	= TODO				; ADD HL,BC
-opc_0A:	opc_LD_R_RI	cpu_a, cpu_bc	; LD A,(BC)
-opc_0B:	opc_DEC_RR	cpu_bc		; DEC BC
-opc_0C: opc_INC_R	cpu_c		; INC C
-opc_0D: opc_DEC_R	cpu_c		; DEC C
-opc_0E:	opc_LD_R_N	cpu_c		; LD C,n
-opc_0F	= TODO				; RRCA
-opc_10	= NO_OP				; *NON-STANDARD* NOP	[DJNZ on Z80]
-opc_11: opc_LD_RR_NN	cpu_de		; LD DE,nn
-opc_12: opc_LD_RI_R	cpu_de, cpu_a	; LD (DE),A
-opc_13:	opc_INC_RR	cpu_de		; INC DE
-opc_14: opc_INC_R	cpu_d		; INC D
-opc_15: opc_DEC_R	cpu_d		; DEC D
-opc_16: opc_LD_R_N	cpu_d		; LD D,n
-opc_17	= TODO				; RLA
-opc_18	= NO_OP				; *NON-STANDARD* NOP	[JR on Z80]
-opc_19	= TODO				; ADD HL,DE
-opc_1A: opc_LD_R_RI	cpu_a, cpu_de	; LD A,(DE)
-opc_1B:	opc_DEC_RR	cpu_de		; DEC DE
-opc_1C: opc_INC_R	cpu_e		; INC E
-opc_1D: opc_DEC_R	cpu_e		; DEC E
-opc_1E:	opc_LD_R_N	cpu_e		; LD E,n
-opc_1F	= TODO				; RRA
-opc_20	= NO_OP				; *NON-STANDARD* NOP	[JR NZ on Z80]
-opc_21: opc_LD_RR_NN	cpu_hl		; LD HL,nn
+opc_00= NO_OP				; NOP	(no-effect opcodes can refeer for the main opcode fetch entry point itself, simply ...)
+opc_01:	OPC_LD_RR_NN	cpu_bc		; LD BC,nn
+opc_02:	OPC_LD_RI_R	cpu_bc, cpu_a	; LD (BC),A
+opc_03:	OPC_INC_RR	cpu_bc		; INC BC, 8080 syntax: INX B
+opc_04: OPC_INC_R	cpu_b		; INC B
+opc_05: OPC_DEC_R	cpu_b		; DEC B
+opc_06:	OPC_LD_R_N	cpu_b		; LD B,n
+opc_07= TODO				; RLCA
+opc_08= NO_OP				; *NON-STANDARD* NOP	[EX AF,AF' on Z80]
+opc_09= TODO				; ADD HL,BC
+opc_0A:	OPC_LD_R_RI	cpu_a, cpu_bc	; LD A,(BC)
+opc_0B:	OPC_DEC_RR	cpu_bc		; DEC BC
+opc_0C: OPC_INC_R	cpu_c		; INC C
+opc_0D: OPC_DEC_R	cpu_c		; DEC C
+opc_0E:	OPC_LD_R_N	cpu_c		; LD C,n
+opc_0F= TODO				; RRCA
+opc_10= NO_OP				; *NON-STANDARD* NOP	[DJNZ on Z80]
+opc_11: OPC_LD_RR_NN	cpu_de		; LD DE,nn
+opc_12: OPC_LD_RI_R	cpu_de, cpu_a	; LD (DE),A
+opc_13:	OPC_INC_RR	cpu_de		; INC DE
+opc_14: OPC_INC_R	cpu_d		; INC D
+opc_15: OPC_DEC_R	cpu_d		; DEC D
+opc_16: OPC_LD_R_N	cpu_d		; LD D,n
+opc_17= TODO				; RLA
+opc_18= NO_OP				; *NON-STANDARD* NOP	[JR on Z80]
+opc_19= TODO				; ADD HL,DE
+opc_1A: OPC_LD_R_RI	cpu_a, cpu_de	; LD A,(DE)
+opc_1B:	OPC_DEC_RR	cpu_de		; DEC DE
+opc_1C: OPC_INC_R	cpu_e		; INC E
+opc_1D: OPC_DEC_R	cpu_e		; DEC E
+opc_1E:	OPC_LD_R_N	cpu_e		; LD E,n
+opc_1F= TODO				; RRA
+opc_20= NO_OP				; *NON-STANDARD* NOP	[JR NZ on Z80]
+opc_21: OPC_LD_RR_NN	cpu_hl		; LD HL,nn
 opc_22:					; LD (nn),HL
 	MEMCONSTPTROP_BEGIN
 	LDA	cpu_l
@@ -418,13 +444,13 @@ opc_22:					; LD (nn),HL
 	STA32Z	cpu_mem_p
 	DEZ		; Z=0 again!!!
 	MEMCONSTPTROP_END
-opc_23:	opc_INC_RR	cpu_hl		; INC HL
-opc_24: opc_INC_R	cpu_h		; INC H
-opc_25: opc_DEC_R	cpu_h		; DEC H
-opc_26:	opc_LD_R_N	cpu_h		; LD H,n
-opc_27	= TODO				; DAA
-opc_28	= NO_OP				; *NON-STANDARD* NOP	[JR Z on Z80]
-opc_29	= TODO				; ADD HL,HL
+opc_23:	OPC_INC_RR	cpu_hl		; INC HL
+opc_24: OPC_INC_R	cpu_h		; INC H
+opc_25: OPC_DEC_R	cpu_h		; DEC H
+opc_26:	OPC_LD_R_N	cpu_h		; LD H,n
+opc_27= TODO				; DAA
+opc_28= NO_OP				; *NON-STANDARD* NOP	[JR Z on Z80]
+opc_29= TODO				; ADD HL,HL
 opc_2A:					; LD HL,(nn)
 	MEMCONSTPTROP_BEGIN	
 	LDA32Z	cpu_mem_p
@@ -434,241 +460,268 @@ opc_2A:					; LD HL,(nn)
 	STA	cpu_h
 	DEZ		; Z=0 again!!!
 	MEMCONSTPTROP_END
-opc_2B:	opc_DEC_RR	cpu_hl		; DEC HL
-opc_2C: opc_INC_R	cpu_l		; INC L
-opc_2D: opc_DEC_R	cpu_l		; DEC L
-opc_2E:	opc_LD_R_N	cpu_l		; LD L,n
-opc_2F	= TODO				; CPL
-opc_30	= NO_OP				; *NON-STANDARD* NOP	[JR NC on Z80]
-opc_31: opc_LD_RR_NN	cpu_sp		; LD SP,nn
+opc_2B:	OPC_DEC_RR	cpu_hl		; DEC HL
+opc_2C: OPC_INC_R	cpu_l		; INC L
+opc_2D: OPC_DEC_R	cpu_l		; DEC L
+opc_2E:	OPC_LD_R_N	cpu_l		; LD L,n
+opc_2F= TODO				; CPL
+opc_30= NO_OP				; *NON-STANDARD* NOP	[JR NC on Z80]
+opc_31: OPC_LD_RR_NN	cpu_sp		; LD SP,nn
 opc_32:					; LD (nn),A
 	MEMCONSTPTROP_BEGIN
 	LDA	cpu_a
 	STA32Z	cpu_mem_p
 	MEMCONSTPTROP_END
-opc_33:	opc_INC_RR	cpu_sp		; INC SP
-opc_34	= TODO				; INC (HL)
-opc_35	= TODO				; DEC (HL)
-opc_36:	opc_LD_RI_N	cpu_hl		; LD (HL),n
-opc_37	= TODO				; SCF
-opc_38	= NO_OP				; *NON-STANDARD* NOP	[JR C on Z80]
-opc_39	= TODO				; ADD HL,SP
+opc_33:	OPC_INC_RR	cpu_sp		; INC SP
+opc_34= TODO				; INC (HL)
+opc_35= TODO				; DEC (HL)
+opc_36:	OPC_LD_RI_N	cpu_hl		; LD (HL),n
+opc_37= TODO				; SCF
+opc_38= NO_OP				; *NON-STANDARD* NOP	[JR C on Z80]
+opc_39= TODO				; ADD HL,SP
 opc_3A:					; LD A,(nn)
 	MEMCONSTPTROP_BEGIN
 	LDA32Z	cpu_mem_p
 	STA	cpu_a
 	MEMCONSTPTROP_END
-opc_3B:	opc_DEC_RR	cpu_sp		; DEC SP
-opc_3C: opc_INC_R	cpu_a		; INC A
-opc_3D: opc_DEC_R	cpu_a		; DEC A
-opc_3E: opc_LD_R_N	cpu_a		; LD A,n
-opc_3F	= TODO				; CCF
-opc_40	= NO_OP				; LD B,B *DOES NOTHING*
-opc_41:	opc_LD_R_R	cpu_b, cpu_c	; LD B,C
-opc_42:	opc_LD_R_R	cpu_b, cpu_d	; LD B,D
-opc_43:	opc_LD_R_R	cpu_b, cpu_e	; LD B,E
-opc_44:	opc_LD_R_R	cpu_b, cpu_h	; LD B,H
-opc_45:	opc_LD_R_R	cpu_b, cpu_l	; LD B,L
-opc_46:	opc_LD_R_RI	cpu_b, cpu_hl	; LD B,(HL)
-opc_47:	opc_LD_R_R	cpu_b, cpu_a	; LD B,A
-opc_48:	opc_LD_R_R	cpu_c, cpu_b	; LD C,B
-opc_49	= NO_OP				; LD C,C *DOES NOTHING*
-opc_4A:	opc_LD_R_R	cpu_c, cpu_d	; LD C,D
-opc_4B:	opc_LD_R_R	cpu_c, cpu_e	; LD C,E
-opc_4C:	opc_LD_R_R	cpu_c, cpu_h	; LD C,H
-opc_4D:	opc_LD_R_R	cpu_c, cpu_l	; LD C,L
-opc_4E:	opc_LD_R_RI	cpu_c, cpu_hl	; LD C,(HL)
-opc_4F:	opc_LD_R_R	cpu_c, cpu_a	; LD C,A
-opc_50: opc_LD_R_R	cpu_d, cpu_b	; LD D,B
-opc_51:	opc_LD_R_R	cpu_d, cpu_c	; LD D,C
-opc_52	= NO_OP				; LD D,D *DOES NOTHING*
-opc_53:	opc_LD_R_R	cpu_d, cpu_e	; LD D,E
-opc_54:	opc_LD_R_R	cpu_d, cpu_h	; LD D,H
-opc_55:	opc_LD_R_R	cpu_d, cpu_l	; LD D,L
-opc_56:	opc_LD_R_RI	cpu_d, cpu_hl	; LD D,(HL)
-opc_57:	opc_LD_R_R	cpu_d, cpu_a	; LD D,A
-opc_58:	opc_LD_R_R	cpu_e, cpu_b	; LD E,B
-opc_59:	opc_LD_R_R	cpu_e, cpu_c	; LD E,C
-opc_5A:	opc_LD_R_R	cpu_e, cpu_d	; LD E,D
-opc_5B	= NO_OP				; LD E,E *DOES NOTHING*
-opc_5C:	opc_LD_R_R	cpu_e, cpu_h	; LD E,H
-opc_5D:	opc_LD_R_R	cpu_e, cpu_l	; LD E,L
-opc_5E:	opc_LD_R_RI	cpu_e, cpu_hl	; LD E,(HL)
-opc_5F:	opc_LD_R_R	cpu_e, cpu_a	; LD E,A
-opc_60: opc_LD_R_R	cpu_h, cpu_b	; LD H,B
-opc_61:	opc_LD_R_R	cpu_h, cpu_c	; LD H,C
-opc_62:	opc_LD_R_R	cpu_h, cpu_d	; LD H,D
-opc_63:	opc_LD_R_R	cpu_h, cpu_e	; LD H,E
-opc_64	= NO_OP				; LD H,H *DOES NOTHING*
-opc_65:	opc_LD_R_R	cpu_h, cpu_l	; LD H,L
-opc_66:	opc_LD_R_RI	cpu_h, cpu_hl	; LD H,(HL)
-opc_67:	opc_LD_R_R	cpu_h, cpu_a	; LD H,A
-opc_68:	opc_LD_R_R	cpu_l, cpu_b	; LD L,B
-opc_69:	opc_LD_R_R	cpu_l, cpu_c	; LD L,C
-opc_6A:	opc_LD_R_R	cpu_l, cpu_d	; LD L,D
-opc_6B:	opc_LD_R_R	cpu_l, cpu_e	; LD L,E
-opc_6C:	opc_LD_R_R	cpu_l, cpu_h	; LD L,H
-opc_6D	= NO_OP				; LD L,L *DOES NOTHING*
-opc_6E:	opc_LD_R_RI	cpu_l, cpu_hl	; LD L,(HL)
-opc_6F:	opc_LD_R_R	cpu_l, cpu_a	; LD L,A
-opc_70: opc_LD_RI_R	cpu_hl, cpu_b	; LD (HL),B
-opc_71:	opc_LD_RI_R	cpu_hl, cpu_c	; LD (HL),C
-opc_72:	opc_LD_RI_R	cpu_hl, cpu_d	; LD (HL),D
-opc_73:	opc_LD_RI_R	cpu_hl, cpu_e	; LD (HL),E
-opc_74:	opc_LD_RI_R	cpu_hl, cpu_h	; LD (HL),H
-opc_75:	opc_LD_RI_R	cpu_hl, cpu_l	; LD (HL),L
-opc_76 = cpu_leave			; *HALT*
-opc_77:	opc_LD_RI_R	cpu_hl, cpu_a	; LD (HL),A
-opc_78:	opc_LD_R_R	cpu_a, cpu_b	; LD A,B
-opc_79:	opc_LD_R_R	cpu_a, cpu_c	; LD A,C
-opc_7A:	opc_LD_R_R	cpu_a, cpu_d	; LD A,D
-opc_7B:	opc_LD_R_R	cpu_a, cpu_e	; LD A,E
-opc_7C:	opc_LD_R_R	cpu_a, cpu_h	; LD A,H
-opc_7D:	opc_LD_R_R	cpu_a, cpu_l	; LD A,L
-opc_7E:	opc_LD_R_RI	cpu_a, cpu_hl	; LD A,(HL)
-opc_7F	= NO_OP				; LD A,A *DOES NOTHING*
-opc_80	= TODO
-opc_81	= TODO
-opc_82	= TODO
-opc_83	= TODO
-opc_84	= TODO
-opc_85	= TODO
-opc_86	= TODO
-opc_87	= TODO
-opc_88	= TODO
-opc_89	= TODO
-opc_8A	= TODO
-opc_8B	= TODO
-opc_8C	= TODO
-opc_8D	= TODO
-opc_8E	= TODO
-opc_8F	= TODO
-opc_90	= TODO
-opc_91	= TODO
-opc_92	= TODO
-opc_93	= TODO
-opc_94	= TODO
-opc_95	= TODO
-opc_96	= TODO
-opc_97	= TODO
-opc_98	= TODO
-opc_99	= TODO
-opc_9A	= TODO
-opc_9B	= TODO
-opc_9C	= TODO
-opc_9D	= TODO
-opc_9E	= TODO
-opc_9F	= TODO
-opc_A0	= TODO
-opc_A1	= TODO
-opc_A2	= TODO
-opc_A3	= TODO
-opc_A4	= TODO
-opc_A5	= TODO
-opc_A6	= TODO
-opc_A7	= TODO
-opc_A8	= TODO
-opc_A9	= TODO
-opc_AA	= TODO
-opc_AB	= TODO
-opc_AC	= TODO
-opc_AD	= TODO
-opc_AE	= TODO
-opc_AF	= TODO
-opc_B0	= TODO
-opc_B1	= TODO
-opc_B2	= TODO
-opc_B3	= TODO
-opc_B4	= TODO
-opc_B5	= TODO
-opc_B6	= TODO
-opc_B7	= TODO
-opc_B8	= TODO
-opc_B9	= TODO
-opc_BA	= TODO
-opc_BB	= TODO
-opc_BC	= TODO
-opc_BD	= TODO
-opc_BE	= TODO
-opc_BF	= TODO
-opc_C0	= opc_RET_NZ			; RET NZ
-opc_C1	= TODO
-opc_C2	= opc_JP_NZ			; JP NZ,nn
-opc_C3	= opc_JP			; JP nn
-opc_C4	= opc_CALL_NZ			; CALL NZ
-opc_C5	= TODO
-opc_C6	= TODO
-opc_C7:	opc_RST	$00			; RST 00h
-opc_C8	= opc_RET_Z			; RET Z
-opc_C9	= opc_RET			; RET
-opc_CA	= opc_JP_Z			; JP Z
-opc_CB	= opc_JP			; *NON-STANDARD* JP nn	[CB-prefix on Z80]
-opc_CC	= opc_CALL_Z			; CALL Z,nn
-opc_CD	= opc_CALL			; CALL nn
-opc_CE	= TODO
-opc_CF:	opc_RST	$08			; RST 08h
-opc_D0	= opc_RET_NC			; RET NC
-opc_D1	= TODO
-opc_D2	= opc_JP_NC			; JP NC,nn
-opc_D3	= TODO
-opc_D4	= opc_CALL_NC			; CALL NZ,nn
-opc_D5	= TODO
-opc_D6	= TODO
-opc_D7:	opc_RST	$10			; RST 10h
-opc_D8	= opc_RET_C			; RET C
-opc_D9	= opc_RET			; *NON-STANDARD* RET		[EXX on Z80]
-opc_DA	= opc_JP_C			; JP C,nn
-opc_DB	= TODO
-opc_DC	= opc_CALL_C			; CALL C,nn
-opc_DD	= opc_CALL			; *NON-STANDARD* CALL nn	[DD-prefix on Z80]
-opc_DE	= TODO
-opc_DF:	opc_RST	$18			; RST 18h
-opc_E0	= opc_RET_PO			; RET PO
-opc_E1	= TODO
-opc_E2	= opc_JP_PO			; JP PO,nn
-opc_E3	= TODO
-opc_E4	= opc_CALL_PO			; CALL PO,nn
-opc_E5	= TODO
-opc_E6	= TODO
-opc_E7:	opc_RST	$20			; RST 20h
-opc_E8	= opc_RET_PE			; RET PE
+opc_3B:	OPC_DEC_RR	cpu_sp		; DEC SP
+opc_3C: OPC_INC_R	cpu_a		; INC A
+opc_3D: OPC_DEC_R	cpu_a		; DEC A
+opc_3E: OPC_LD_R_N	cpu_a		; LD A,n
+opc_3F= TODO				; CCF
+opc_40= NO_OP				; LD B,B *DOES NOTHING*
+opc_41:	OPC_LD_R_R	cpu_b, cpu_c	; LD B,C
+opc_42:	OPC_LD_R_R	cpu_b, cpu_d	; LD B,D
+opc_43:	OPC_LD_R_R	cpu_b, cpu_e	; LD B,E
+opc_44:	OPC_LD_R_R	cpu_b, cpu_h	; LD B,H
+opc_45:	OPC_LD_R_R	cpu_b, cpu_l	; LD B,L
+opc_46:	OPC_LD_R_RI	cpu_b, cpu_hl	; LD B,(HL)
+opc_47:	OPC_LD_R_R	cpu_b, cpu_a	; LD B,A
+opc_48:	OPC_LD_R_R	cpu_c, cpu_b	; LD C,B
+opc_49= NO_OP				; LD C,C *DOES NOTHING*
+opc_4A:	OPC_LD_R_R	cpu_c, cpu_d	; LD C,D
+opc_4B:	OPC_LD_R_R	cpu_c, cpu_e	; LD C,E
+opc_4C:	OPC_LD_R_R	cpu_c, cpu_h	; LD C,H
+opc_4D:	OPC_LD_R_R	cpu_c, cpu_l	; LD C,L
+opc_4E:	OPC_LD_R_RI	cpu_c, cpu_hl	; LD C,(HL)
+opc_4F:	OPC_LD_R_R	cpu_c, cpu_a	; LD C,A
+opc_50: OPC_LD_R_R	cpu_d, cpu_b	; LD D,B
+opc_51:	OPC_LD_R_R	cpu_d, cpu_c	; LD D,C
+opc_52= NO_OP				; LD D,D *DOES NOTHING*
+opc_53:	OPC_LD_R_R	cpu_d, cpu_e	; LD D,E
+opc_54:	OPC_LD_R_R	cpu_d, cpu_h	; LD D,H
+opc_55:	OPC_LD_R_R	cpu_d, cpu_l	; LD D,L
+opc_56:	OPC_LD_R_RI	cpu_d, cpu_hl	; LD D,(HL)
+opc_57:	OPC_LD_R_R	cpu_d, cpu_a	; LD D,A
+opc_58:	OPC_LD_R_R	cpu_e, cpu_b	; LD E,B
+opc_59:	OPC_LD_R_R	cpu_e, cpu_c	; LD E,C
+opc_5A:	OPC_LD_R_R	cpu_e, cpu_d	; LD E,D
+opc_5B= NO_OP				; LD E,E *DOES NOTHING*
+opc_5C:	OPC_LD_R_R	cpu_e, cpu_h	; LD E,H
+opc_5D:	OPC_LD_R_R	cpu_e, cpu_l	; LD E,L
+opc_5E:	OPC_LD_R_RI	cpu_e, cpu_hl	; LD E,(HL)
+opc_5F:	OPC_LD_R_R	cpu_e, cpu_a	; LD E,A
+opc_60: OPC_LD_R_R	cpu_h, cpu_b	; LD H,B
+opc_61:	OPC_LD_R_R	cpu_h, cpu_c	; LD H,C
+opc_62:	OPC_LD_R_R	cpu_h, cpu_d	; LD H,D
+opc_63:	OPC_LD_R_R	cpu_h, cpu_e	; LD H,E
+opc_64= NO_OP				; LD H,H *DOES NOTHING*
+opc_65:	OPC_LD_R_R	cpu_h, cpu_l	; LD H,L
+opc_66:	OPC_LD_R_RI	cpu_h, cpu_hl	; LD H,(HL)
+opc_67:	OPC_LD_R_R	cpu_h, cpu_a	; LD H,A
+opc_68:	OPC_LD_R_R	cpu_l, cpu_b	; LD L,B
+opc_69:	OPC_LD_R_R	cpu_l, cpu_c	; LD L,C
+opc_6A:	OPC_LD_R_R	cpu_l, cpu_d	; LD L,D
+opc_6B:	OPC_LD_R_R	cpu_l, cpu_e	; LD L,E
+opc_6C:	OPC_LD_R_R	cpu_l, cpu_h	; LD L,H
+opc_6D= NO_OP				; LD L,L *DOES NOTHING*
+opc_6E:	OPC_LD_R_RI	cpu_l, cpu_hl	; LD L,(HL)
+opc_6F:	OPC_LD_R_R	cpu_l, cpu_a	; LD L,A
+opc_70: OPC_LD_RI_R	cpu_hl, cpu_b	; LD (HL),B
+opc_71:	OPC_LD_RI_R	cpu_hl, cpu_c	; LD (HL),C
+opc_72:	OPC_LD_RI_R	cpu_hl, cpu_d	; LD (HL),D
+opc_73:	OPC_LD_RI_R	cpu_hl, cpu_e	; LD (HL),E
+opc_74:	OPC_LD_RI_R	cpu_hl, cpu_h	; LD (HL),H
+opc_75:	OPC_LD_RI_R	cpu_hl, cpu_l	; LD (HL),L
+opc_76= cpu_leave			; *HALT*
+opc_77:	OPC_LD_RI_R	cpu_hl, cpu_a	; LD (HL),A
+opc_78:	OPC_LD_R_R	cpu_a, cpu_b	; LD A,B
+opc_79:	OPC_LD_R_R	cpu_a, cpu_c	; LD A,C
+opc_7A:	OPC_LD_R_R	cpu_a, cpu_d	; LD A,D
+opc_7B:	OPC_LD_R_R	cpu_a, cpu_e	; LD A,E
+opc_7C:	OPC_LD_R_R	cpu_a, cpu_h	; LD A,H
+opc_7D:	OPC_LD_R_R	cpu_a, cpu_l	; LD A,L
+opc_7E:	OPC_LD_R_RI	cpu_a, cpu_hl	; LD A,(HL)
+opc_7F= NO_OP				; LD A,A *DOES NOTHING*
+opc_80= TODO
+opc_81= TODO
+opc_82= TODO
+opc_83= TODO
+opc_84= TODO
+opc_85= TODO
+opc_86= TODO
+opc_87= TODO
+opc_88= TODO
+opc_89= TODO
+opc_8A= TODO
+opc_8B= TODO
+opc_8C= TODO
+opc_8D= TODO
+opc_8E= TODO
+opc_8F= TODO
+opc_90= TODO
+opc_91= TODO
+opc_92= TODO
+opc_93= TODO
+opc_94= TODO
+opc_95= TODO
+opc_96= TODO
+opc_97= TODO
+opc_98= TODO
+opc_99= TODO
+opc_9A= TODO
+opc_9B= TODO
+opc_9C= TODO
+opc_9D= TODO
+opc_9E= TODO
+opc_9F= TODO
+opc_A0:	OPC_LOGICOP_GEN AND, cpu_b	; AND A,B
+opc_A1:	OPC_LOGICOP_GEN AND, cpu_c	; AND A,C
+opc_A2: OPC_LOGICOP_GEN AND, cpu_d	; AND A,D
+opc_A3: OPC_LOGICOP_GEN AND, cpu_e	; AND A,E
+opc_A4: OPC_LOGICOP_GEN AND, cpu_h	; AND A,H
+opc_A5: OPC_LOGICOP_GEN AND, cpu_l	; AND A,L
+opc_A6:	OPC_LOGICOP_GEN AND32Z, cpu_hl	; AND A,(HL)
+opc_A7: OPC_LOGICOP_GEN AND, cpu_a	; AND A,A
+opc_A8:	OPC_LOGICOP_GEN EOR, cpu_b	; XOR A,B
+opc_A9:	OPC_LOGICOP_GEN EOR, cpu_c	; XOR A,C
+opc_AA: OPC_LOGICOP_GEN EOR, cpu_d	; XOR A,D
+opc_AB: OPC_LOGICOP_GEN EOR, cpu_e	; XOR A,E
+opc_AC: OPC_LOGICOP_GEN EOR, cpu_h	; XOR A,H
+opc_AD: OPC_LOGICOP_GEN EOR, cpu_l	; XOR A,L
+opc_AE:	OPC_LOGICOP_GEN EOR32Z, cpu_hl	; XOR A,(HL)
+opc_AF: OPC_LOGICOP_GEN EOR, cpu_a	; XOR A,A
+opc_B0:	OPC_LOGICOP_GEN ORA, cpu_b	; OR A,B
+opc_B1:	OPC_LOGICOP_GEN ORA, cpu_c	; OR A,C
+opc_B2: OPC_LOGICOP_GEN ORA, cpu_d	; OR A,D
+opc_B3: OPC_LOGICOP_GEN ORA, cpu_e	; OR A,E
+opc_B4: OPC_LOGICOP_GEN ORA, cpu_h	; OR A,H
+opc_B5: OPC_LOGICOP_GEN ORA, cpu_l	; OR A,L
+opc_B6:	OPC_LOGICOP_GEN ORA32Z, cpu_hl	; OR A,(HL)
+opc_B7: OPC_LOGICOP_GEN ORA, cpu_a	; OR A,A
+opc_B8= TODO	; CP B
+opc_B9= TODO	; CP C
+opc_BA= TODO	; CP D
+opc_BB= TODO	; CP E
+opc_BC= TODO	; CP H
+opc_BD= TODO	; CP L
+opc_BE= TODO	; CP (HL)
+opc_BF= TODO	; CP A
+opc_C0= opc_RET_NZ			; RET NZ
+opc_C1:	OPC_POP_RR	cpu_bc		; POP BC
+opc_C2= opc_JP_NZ			; JP NZ,nn
+opc_C3= opc_JP				; JP nn
+opc_C4= opc_CALL_NZ			; CALL NZ
+opc_C5:	OPC_PUSH_RR	cpu_bc		; PUSH BC
+opc_C6= TODO
+opc_C7:	OPC_RST		$00		; RST 00h
+opc_C8= opc_RET_Z			; RET Z
+opc_C9= opc_RET				; RET
+opc_CA= opc_JP_Z			; JP Z
+opc_CB= opc_JP				; *NON-STANDARD* JP nn	[CB-prefix on Z80]
+opc_CC= opc_CALL_Z			; CALL Z,nn
+opc_CD= opc_CALL			; CALL nn
+opc_CE= TODO
+opc_CF:	OPC_RST		$08		; RST 08h
+opc_D0= opc_RET_NC			; RET NC
+opc_D1:	OPC_POP_RR	cpu_de		; POP DE
+opc_D2= opc_JP_NC			; JP NC,nn
+opc_D3= TODO				; OUT (n),A
+opc_D4= opc_CALL_NC			; CALL NZ,nn
+opc_D5:	OPC_PUSH_RR	cpu_de		; PUSH DE
+opc_D6= TODO
+opc_D7:	OPC_RST		$10		; RST 10h
+opc_D8= opc_RET_C			; RET C
+opc_D9= opc_RET				; *NON-STANDARD* RET		[EXX on Z80]
+opc_DA= opc_JP_C			; JP C,nn
+opc_DB= TODO				; IN A,(n)
+opc_DC= opc_CALL_C			; CALL C,nn
+opc_DD= opc_CALL			; *NON-STANDARD* CALL nn	[DD-prefix on Z80]
+opc_DE= TODO
+opc_DF:	OPC_RST		$18		; RST 18h
+opc_E0= opc_RET_PO			; RET PO
+opc_E1:	OPC_POP_RR	cpu_hl		; POP HL
+opc_E2= opc_JP_PO			; JP PO,nn
+opc_E3:					; EX (SP),HL
+	LDA32Z	cpu_sp	; (SP)<->L
+	LDX	cpu_l
+	STA	cpu_l
+	TXA
+	STA32Z	cpu_sp
+	INZ
+	LDA32Z	cpu_sp	; (SP+1)<->H
+	LDX	cpu_h
+	STA	cpu_h
+	TXA
+	STA32Z	cpu_sp
+	DEZ		; restore Z=0 ...
+	JMP	next_inc1
+opc_E4= opc_CALL_PO			; CALL PO,nn
+opc_E5:	OPC_PUSH_RR	cpu_hl		; PUSH HL
+opc_E6:	INW		cpu_pc		; AND A,n
+	OPC_LOGICOP_GEN AND32Z, cpu_pc
+opc_E7:	OPC_RST		$20		; RST 20h
+opc_E8= opc_RET_PE			; RET PE
 opc_E9:					; JP (HL), though JP HL is what it actually does, 8080 syntax is: PCHL
 	LDA	cpu_l
 	STA	cpu_pcl
 	LDA	cpu_h
 	STA	cpu_pch
 	JMP	next_no_inc
-opc_EA	= opc_JP_PE			; JP PE,nn
-opc_EB	= TODO
-opc_EC	= opc_CALL_PE			; CALL PE,nn
-opc_ED	= opc_CALL			; *NON-STANDARD* CALL nn	[ED-prefix on Z80]
-opc_EE	= TODO
-opc_EF:	opc_RST	$28			; RST 28h
-opc_F0	= opc_RET_P			; RET P
-opc_F1	= TODO
-opc_F2	= opc_JP_P			; JP P,nn
-opc_F3	= TODO
-opc_F4	= opc_CALL_P			; CALL P,nn
-opc_F5	= TODO
-opc_F6	= TODO
-opc_F7:	opc_RST	$30			; RST 30h
-opc_F8	= opc_RET_M			; RET M
+opc_EA= opc_JP_PE			; JP PE,nn
+opc_EB:					; EX DE,HL
+	LDA	cpu_l
+	LDX	cpu_e
+	STA	cpu_e
+	STX	cpu_l
+	LDA	cpu_h
+	LDX	cpu_d
+	STA	cpu_d
+	STX	cpu_h
+	JMP	next_inc1
+opc_EC= opc_CALL_PE			; CALL PE,nn
+opc_ED= opc_CALL			; *NON-STANDARD* CALL nn	[ED-prefix on Z80]
+opc_EE:	INW		cpu_pc		; XOR A,n
+	OPC_LOGICOP_GEN EOR32Z, cpu_pc
+opc_EF:	OPC_RST		$28		; RST 28h
+opc_F0= opc_RET_P			; RET P
+opc_F1:	OPC_POP_RR	cpu_af		; POP AF
+opc_F2= opc_JP_P			; JP P,nn
+opc_F3= next_inc1			; DI	!!INTERRUPTS ARE NOT EMULATED!!
+opc_F4= opc_CALL_P			; CALL P,nn
+opc_F5:	OPC_PUSH_RR	cpu_af		; PUSH AF
+opc_F6:	INW		cpu_pc		; OR A,n
+	OPC_LOGICOP_GEN ORA32Z, cpu_pc
+opc_F7:	OPC_RST		$30		; RST 30h
+opc_F8= opc_RET_M			; RET M
 opc_F9:					; LD SP,HL
 	LDA	cpu_l
 	STA	cpu_spl
 	LDA	cpu_h
 	STA	cpu_sph
 	JMP	next_inc1
-opc_FA	= opc_JP_M			; JP M,nn
-opc_FB	= TODO
-opc_FC	= opc_CALL_M			; CALL M,nn
-opc_FD	= opc_CALL			; *NON-STANDARD* CALL nn	[FD-prefix on Z80]
-opc_FE	= TODO
-opc_FF:	opc_RST	$38			; RST 38h
+opc_FA= opc_JP_M			; JP M,nn
+opc_FB= next_inc1			; EI	!!INTERRUPTS ARE NOT EMULATED!!
+opc_FC= opc_CALL_M			; CALL M,nn
+opc_FD= opc_CALL			; *NON-STANDARD* CALL nn	[FD-prefix on Z80]
+opc_FE= TODO				; CP n
+opc_FF:	OPC_RST		$38		; RST 38h
 
 	
 .EXPORT	cpu_start
-cpu_start = next_no_inc
+cpu_start:
+	LDZ	#0		; we use Z=0 in *most* cases through the CPU emulation (it may be set temporarly to other values but it must be reset then ASAP!)
+	JMP	next_no_inc
 
 .EXPORT cpu_reset
 cpu_reset:
@@ -687,7 +740,8 @@ cpu_reset:
 	RTS
 	
 ; Please see comments at cpu_leave! The same things.
-; Just this is called if an opcode emulation is not implemented.
+; Just this is one jumped on, if an opcode emulation is not implemented.
+TODO = cpu_unimplemented
 cpu_unimplemented:
 	TXA
 	ROR	A
@@ -695,7 +749,8 @@ cpu_unimplemented:
 	RTS
 	
 ; This is used if an opcode "dispatches" the control. Like HALT.
-TODO = cpu_leave
+; Note: if you want to continue, you need to increment cpu_pc by your own before calling cpu_start again!
+; this is true for cpu_unimplemented as well
 cpu_leave:
 	TXA			; (see next op), though A should contain the same as X, just to be sure anyway ...
 	ROR	A		; Restore original opcode to report for the caller, A still holds the ASL'ed opcode, and carry should be the old 7th bit of the opcode
