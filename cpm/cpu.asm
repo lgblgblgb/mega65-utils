@@ -1,6 +1,7 @@
 ; ----------------------------------------------------------------------------
 ;
-; Software emulator of a 8080 CPU for the Mega-65.
+; Software emulator of the 8080 CPU for the Mega-65, intended for CP/M or such.
+; Please read comments throughout this source for more information.
 ;
 ; Copyright (C)2017 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 ;
@@ -30,7 +31,7 @@
 ; this source file!
 ; **WARNING** This 8080 emulation is not fully correct. Surely, not its by
 ; timing, but there can be "corner cases" where it fails, ie, wrapping around
-; memory reference at the end of 64K, etc.
+; memory reference at the end of 64K, possible many flag handling bugs, etc.
 ; *NOTE*: Though this is a 8080 emulator, and not Z80, I still prefer (and
 ; know) Z80 asm syntax better than 8080, so I will use that terminology! Also,
 ; the intent, that some day, maybe this can become a Z80 emulator as well,
@@ -85,9 +86,21 @@ cpu_last:
 
 .CODE
 
-
+.INCLUDE "cpu_tables.inc"
 
 ; Mega-65 32 bit linear ops
+;
+; NOTE: ZP locations above holds 4 bytes for pointers, the second two bytes
+; are the higher 16 bits of 32 bits address which is fixed for the emulation,
+; and only the lower 16 bits are used as registers. These 4 bytes pointers
+; are used by the special Mega-65 addressing modes capable of addressing the
+; whole memory space. This allows us to have own memory for the emulator
+; itself, and still having 64K fully for the 8080 emulation without the need
+; of slow memory paing, address calculating etc, on each 8080 memory references.
+; NOTE: using this M65-specific feature is actually slower than "normal"
+; memory acces, but the only sane way to provide full 64K for 8080 and also avoid
+; memory mapping tricks all the time during the emulation which would be even
+; much more slower anyway!
 
 .MACRO	LDA32Z	zploc
 	EOM
@@ -99,15 +112,19 @@ cpu_last:
 .ENDMACRO
 .MACRO	ORA32Z	zploc
 	EOM
-	STA	(zploc),Z
+	ORA	(zploc),Z
 .ENDMACRO
 .MACRO	AND32Z	zploc
 	EOM
-	STA	(zploc),Z
+	AND	(zploc),Z
 .ENDMACRO
 .MACRO	EOR32Z	zploc
 	EOM
-	STA	(zploc),Z
+	EOR	(zploc),Z
+.ENDMACRO
+.MACRO	ADC32Z	zploc
+	EOM
+	ADC	(zploc),Z
 .ENDMACRO
 
 ; Stack byte level POP/PUSH primitives
@@ -175,7 +192,7 @@ cpu_last:
 	JMP	next_inc1
 .ENDMACRO
 
-; Final stack POP/PUSH ops
+; Final stack POP/PUSH implementations, can be directly used by opcode realization for 8080
 
 .MACRO	OPC_PUSH_RR regpair
 	PUSH_RR	regpair
@@ -186,7 +203,7 @@ cpu_last:
 	JMP	next_inc1
 .ENDMACRO
 
-; INC/DEC 16 bit registers
+; INC/DEC 16 bit registers (the more easy stuff, as register pairs INC/DEC do not modify any 8080 flags bit!)
 
 .MACRO	OPC_INC_RR regpair
 	INW	z:regpair
@@ -205,26 +222,76 @@ cpu_last:
 	STX	z:reg
 	LDA	cpu_f
 	AND	#1			; keep only carry flag from flags
-	ORA	inc8_flags_tab,X
+	ORA	inc8_f_tab,X
 	STA	cpu_f
 	JMP	next_inc1
 .ENDMACRO
-
 .MACRO	OPC_DEC_R reg
 	LDX	z:reg
 	DEX
 	STX	z:reg
-	LDA	indec_flags_tab,X
+	LDA	cpu_f
+	AND	#1
+	ORA	dec8_f_tab,X
 	STA	cpu_f
 	JMP	next_inc1
 .ENDMACRO
+
+; 16 bit ADD HL,RR operations
+
+.MACRO	OPC_ADD_HL_RR	regpair
+	CLC
+	LDA	z:regpair
+	ADC	cpu_l
+	STA	cpu_l
+	LDA	z:regpair+1
+	ADC	cpu_h
+	STA	cpu_h
+	LDA	#1	; carry flag mask
+	BCS	:+
+	TRB	cpu_f
+	JMP	next_inc1
+:	TSB	cpu_f
+	JMP	next_inc1
+.ENDMACRO
+
+; 8 bit "ADD" operations
+
+.MACRO	ADC_ADD_OPS	addop, value
+	LDA	cpu_a
+	;TAY			; remember original value of cpu_a in Y
+	addop	value		; addop: ADC or ADC32Z (for immed. value or (HL) indexed), for ADC32Z, value must be cpu_pc/cpu_hl pointing to the value itself
+	STA	cpu_a		; this was the easy part, but the flags, oh my!!! :-@
+	;TAX
+	LDA	szp_f_tab,X
+	ADC	#0		; based on the carry of the "main" ADC ("addop") op's result, this will set bit0 of flags (from szp_f_tab) as it was zero before!
+	STA	cpu_f		; store flags: FIXME no Half-carry yet :(
+	; Now S,Z,P,C is handled, the most problematic stuff remains: H
+	; FIXME: H is not handled yet, that damn too complex according to some emulator sources, I had to look up. In theory it's easy,
+	; just carry from bit 3 to bit 4, but it looks something really odd, using look-up tables and ugly index generation, which would be really slow here!
+.ENDMACRO
+.MACRO	OPC_ADD_A_R	addop, value
+	CLC
+	ADC_ADD_OPS	addop, value
+	JMP		next_inc1
+.ENDMACRO
+.MACRO	OPC_ADC_A_R	addop, value
+	; Moving i8080's carry flag into our actual 65xx CPU's carry flag:
+	LDA		cpu_f
+	LSR		A
+	; Now the operation
+	ADC_ADD_OPS	addop, value
+	JMP		next_inc1
+.ENDMACRO
+
+
 
 ; RST "generator"
 
 .MACRO	OPC_RST	vector
 	INW	cpu_pc
 	PUSH_RR	cpu_pc
-	STZ	cpu_pch		; Z must be zero, so high address of PC will be zero
+	STZ	cpu_pch		; Z = 0, so high address of PC will be zero
 	LDA	#vector
 	STA	cpu_pcl		; set low byte of PC
 	JMP	next_no_inc
@@ -258,12 +325,6 @@ cpu_last:
 .MACRO	BR_NZERO label
 	BBR6	cpu_f, label
 .ENDMACRO
-.MACRO	BR_AUX label
-	BBS4	cpu_f, label
-.ENDMACRO
-.MACRO	BR_NAUX label
-	BBR4	cpu_f, label
-.ENDMACRO
 .MACRO	BR_PAR label
 	BBS2	cpu_f, label
 .ENDMACRO
@@ -282,12 +343,12 @@ cpu_last:
 .ENDMACRO
 
 
-.MACRO	OPC_LOGICOP_GEN op,reg
+.MACRO	OPC_LOGICOP_GEN op,reg,ftab
 	LDA	cpu_a
 	op	reg
 	STA	cpu_a
 	TAX
-	LDA	sz53p_table,X
+	LDA	ftab,X
 	STA	cpu_f
 	JMP	next_inc1
 .ENDMACRO
@@ -297,6 +358,17 @@ cpu_last:
 ; *** Main opcode fetch, and instruction "decoding" by jump table ***
 ; *******************************************************************
 
+; NOTE: general design of the CPU emulator is to keep it simple for now.
+; Actually, on 65CE02 at least "INW" in kinda slow (7 cycles?). It would
+; be better to use "Z" register as an offset from a base, and only adjust
+; that base if Z overflows. It would help to gain more speed. However,
+; that makes many operation (requires PC to calculated, etc, for example
+; on CALLs) more complex, and also more complex way to always save Z
+; in case if we need it (for SP reference, or direct memory pointer).
+; My general idea, to use the most simple method for now, at least.
+; Anyway, maybe M65 will use ZP caching, so INW will be anyway fast
+; enough. Also don't forget, that we're running on 48Mhz 65CE02-like
+; CPU, so it not so bad at least, we can say.
 
 next_inc3:
 	INW	cpu_pc
@@ -315,7 +387,13 @@ next_no_inc:
 
 NO_OP	= next_inc1
 
-
+; NOTE: much compact decoding can be done for sure without a full
+; jump table, and trickier way to decode opcodes. However I simply
+; don't care about size, I am happy with jump tables, or even kinda
+; big data tables for flags, etc, if it helps to gain speed!
+; After all, the goal it to have "okey" speed of 8080 emulation
+; for CP/M and such running on the M65, it does not help too much
+; if the emulated 8080 runs like a 8080 locked on 10KHz or such ...
 
 opcode_jump_table:
 	.WORD opc_00,opc_01,opc_02,opc_03,opc_04,opc_05,opc_06,opc_07,opc_08,opc_09,opc_0A,opc_0B,opc_0C,opc_0D,opc_0E,opc_0F
@@ -335,8 +413,11 @@ opcode_jump_table:
 	.WORD opc_E0,opc_E1,opc_E2,opc_E3,opc_E4,opc_E5,opc_E6,opc_E7,opc_E8,opc_E9,opc_EA,opc_EB,opc_EC,opc_ED,opc_EE,opc_EF
 	.WORD opc_F0,opc_F1,opc_F2,opc_F3,opc_F4,opc_F5,opc_F6,opc_F7,opc_F8,opc_F9,opc_FA,opc_FB,opc_FC,opc_FD,opc_FE,opc_FF
 
-
-
+; NOTE: the emulation (it's more simple for *MYSELF* at least) of opcodes consits of linear
+; sequence of opcode emulation (see later). It's more easy to compare with opcode lists, etc.
+; However some opcodes requires to be "groupped" so that 8 bit relate branches can be used,
+; with conditional opcodes. That is the reason, I include them here, and only refeer them
+; on the "opcode emulation" part later.
 
 opc_CALL_Z:	COND_OP BR_ZERO,  opc_CALL, next_inc3
 opc_CALL_NZ:	COND_OP BR_NZERO, opc_CALL, next_inc3
@@ -408,15 +489,43 @@ opc_03:	OPC_INC_RR	cpu_bc		; INC BC, 8080 syntax: INX B
 opc_04: OPC_INC_R	cpu_b		; INC B
 opc_05: OPC_DEC_R	cpu_b		; DEC B
 opc_06:	OPC_LD_R_N	cpu_b		; LD B,n
-opc_07= TODO				; RLCA
+opc_07:					; RLCA
+	LDA	cpu_a
+	ASL	A	; shift left, original bit 7 in the carry now, bit 0 become 0
+	BCS	:+
+	; Carry should be clear, bit 0 of A is OK to leave that way
+	STA	cpu_a
+	LDA	#1
+	TRB	cpu_f
+	JMP	next_inc1
+:	; Carry to set! bit0 of A should be set!
+	INA	; sets bit0 to 1 since it was zero before
+	STA	cpu_a
+	LDA	#1
+	TSB	cpu_f
+	JMP	next_inc1
 opc_08= NO_OP				; *NON-STANDARD* NOP	[EX AF,AF' on Z80]
-opc_09= TODO				; ADD HL,BC
+opc_09: OPC_ADD_HL_RR	cpu_bc		; ADD HL,BC
 opc_0A:	OPC_LD_R_RI	cpu_a, cpu_bc	; LD A,(BC)
 opc_0B:	OPC_DEC_RR	cpu_bc		; DEC BC
 opc_0C: OPC_INC_R	cpu_c		; INC C
 opc_0D: OPC_DEC_R	cpu_c		; DEC C
 opc_0E:	OPC_LD_R_N	cpu_c		; LD C,n
-opc_0F= TODO				; RRCA
+opc_0F:					; RRCA
+	LDA	cpu_a
+	LSR	A
+	BCS	:+
+	; Carry should be clear, bit 7 of A is OK to leave that way
+	STA	cpu_a
+	LDA	#1
+	TRB	cpu_f
+	JMP	next_inc1
+:	; Carry to set! bit7 of A should be set!
+	ORA	#$80	; sets bit 7 of A
+	STA	cpu_a
+	LDA	#1
+	TSB	cpu_f
+	JMP	next_inc1
 opc_10= NO_OP				; *NON-STANDARD* NOP	[DJNZ on Z80]
 opc_11: OPC_LD_RR_NN	cpu_de		; LD DE,nn
 opc_12: OPC_LD_RI_R	cpu_de, cpu_a	; LD (DE),A
@@ -424,15 +533,27 @@ opc_13:	OPC_INC_RR	cpu_de		; INC DE
 opc_14: OPC_INC_R	cpu_d		; INC D
 opc_15: OPC_DEC_R	cpu_d		; DEC D
 opc_16: OPC_LD_R_N	cpu_d		; LD D,n
-opc_17= TODO				; RLA
+opc_17:					; RLA
+	LDA	cpu_f
+	LSR	A		; now i8080 carry is in 65xx real carry
+	ROL	cpu_a		; do the major job of the opcode, RMW-style
+	ROL	A		; shift back i8080 flags WITH feeding carry with the previouS ROL
+	STA	cpu_f
+	JMP	next_inc1
 opc_18= NO_OP				; *NON-STANDARD* NOP	[JR on Z80]
-opc_19= TODO				; ADD HL,DE
+opc_19:	OPC_ADD_HL_RR	cpu_de		; ADD HL,DE
 opc_1A: OPC_LD_R_RI	cpu_a, cpu_de	; LD A,(DE)
 opc_1B:	OPC_DEC_RR	cpu_de		; DEC DE
 opc_1C: OPC_INC_R	cpu_e		; INC E
 opc_1D: OPC_DEC_R	cpu_e		; DEC E
 opc_1E:	OPC_LD_R_N	cpu_e		; LD E,n
-opc_1F= TODO				; RRA
+opc_1F: 				; RRA
+	LDA	cpu_f
+	LSR	A
+	ROR	cpu_a
+	ROL	A
+	STA	cpu_f
+	JMP	next_inc1
 opc_20= NO_OP				; *NON-STANDARD* NOP	[JR NZ on Z80]
 opc_21: OPC_LD_RR_NN	cpu_hl		; LD HL,nn
 opc_22:					; LD (nn),HL
@@ -441,7 +562,7 @@ opc_22:					; LD (nn),HL
 	STA32Z	cpu_mem_p
 	INZ
 	LDA	cpu_h
-	STA32Z	cpu_mem_p
+	STA32Z	cpu_mem_p	; writes byte indexed by (cpu_mem_p)+1 becasuse Z=1 now
 	DEZ		; Z=0 again!!!
 	MEMCONSTPTROP_END
 opc_23:	OPC_INC_RR	cpu_hl		; INC HL
@@ -450,13 +571,13 @@ opc_25: OPC_DEC_R	cpu_h		; DEC H
 opc_26:	OPC_LD_R_N	cpu_h		; LD H,n
 opc_27= TODO				; DAA
 opc_28= NO_OP				; *NON-STANDARD* NOP	[JR Z on Z80]
-opc_29= TODO				; ADD HL,HL
+opc_29: OPC_ADD_HL_RR	cpu_hl		; ADD HL,HL
 opc_2A:					; LD HL,(nn)
 	MEMCONSTPTROP_BEGIN	
 	LDA32Z	cpu_mem_p
 	STA	cpu_l
 	INZ
-	LDA32Z	cpu_mem_p
+	LDA32Z	cpu_mem_p	; reads byte indexed by (cpu_mem_p)+1 becasuse Z=1 now
 	STA	cpu_h
 	DEZ		; Z=0 again!!!
 	MEMCONSTPTROP_END
@@ -464,7 +585,11 @@ opc_2B:	OPC_DEC_RR	cpu_hl		; DEC HL
 opc_2C: OPC_INC_R	cpu_l		; INC L
 opc_2D: OPC_DEC_R	cpu_l		; DEC L
 opc_2E:	OPC_LD_R_N	cpu_l		; LD L,n
-opc_2F= TODO				; CPL
+opc_2F:					; CPL
+	LDA	cpu_a
+	EOR	#$FF
+	STA	cpu_a
+	JMP	next_inc1
 opc_30= NO_OP				; *NON-STANDARD* NOP	[JR NC on Z80]
 opc_31: OPC_LD_RR_NN	cpu_sp		; LD SP,nn
 opc_32:					; LD (nn),A
@@ -473,12 +598,33 @@ opc_32:					; LD (nn),A
 	STA32Z	cpu_mem_p
 	MEMCONSTPTROP_END
 opc_33:	OPC_INC_RR	cpu_sp		; INC SP
-opc_34= TODO				; INC (HL)
-opc_35= TODO				; DEC (HL)
+opc_34:					; INC (HL)
+	LDA32Z	cpu_hl
+	INA
+	STA32Z	cpu_hl
+	TAX
+	LDA	cpu_f
+	AND	#1
+	ORA	inc8_f_tab,X
+	STA	cpu_f
+	JMP	next_inc1
+opc_35:					; DEC (HL)
+	LDA32Z	cpu_hl
+	DEA
+	STA32Z	cpu_hl
+	TAX
+	LDA	cpu_f
+	AND	#1
+	ORA	dec8_f_tab,X
+	STA	cpu_f
+	JMP	next_inc1
 opc_36:	OPC_LD_RI_N	cpu_hl		; LD (HL),n
-opc_37= TODO				; SCF
+opc_37:					; SCF
+	LDA	#1	; 8080 carry bit mask in flags
+	TSB	cpu_f
+	JMP	next_inc1
 opc_38= NO_OP				; *NON-STANDARD* NOP	[JR C on Z80]
-opc_39= TODO				; ADD HL,SP
+opc_39:	OPC_ADD_HL_RR	cpu_sp		; ADD HL,SP
 opc_3A:					; LD A,(nn)
 	MEMCONSTPTROP_BEGIN
 	LDA32Z	cpu_mem_p
@@ -488,7 +634,11 @@ opc_3B:	OPC_DEC_RR	cpu_sp		; DEC SP
 opc_3C: OPC_INC_R	cpu_a		; INC A
 opc_3D: OPC_DEC_R	cpu_a		; DEC A
 opc_3E: OPC_LD_R_N	cpu_a		; LD A,n
-opc_3F= TODO				; CCF
+opc_3F:					; CCF
+	LDA	cpu_f
+	EOR	#1	; 8080 carry bit mask in flags
+	STA	cpu_f
+	JMP	next_inc1
 opc_40= NO_OP				; LD B,B *DOES NOTHING*
 opc_41:	OPC_LD_R_R	cpu_b, cpu_c	; LD B,C
 opc_42:	OPC_LD_R_R	cpu_b, cpu_d	; LD B,D
@@ -553,22 +703,22 @@ opc_7C:	OPC_LD_R_R	cpu_a, cpu_h	; LD A,H
 opc_7D:	OPC_LD_R_R	cpu_a, cpu_l	; LD A,L
 opc_7E:	OPC_LD_R_RI	cpu_a, cpu_hl	; LD A,(HL)
 opc_7F= NO_OP				; LD A,A *DOES NOTHING*
-opc_80= TODO
-opc_81= TODO
-opc_82= TODO
-opc_83= TODO
-opc_84= TODO
-opc_85= TODO
-opc_86= TODO
-opc_87= TODO
-opc_88= TODO
-opc_89= TODO
-opc_8A= TODO
-opc_8B= TODO
-opc_8C= TODO
-opc_8D= TODO
-opc_8E= TODO
-opc_8F= TODO
+opc_80:	OPC_ADD_A_R	ADC, cpu_b	; ADD A,B
+opc_81:	OPC_ADD_A_R	ADC, cpu_c	; ADD A,C
+opc_82:	OPC_ADD_A_R	ADC, cpu_d	; ADD A,D
+opc_83:	OPC_ADD_A_R	ADC, cpu_e	; ADD A,E
+opc_84:	OPC_ADD_A_R	ADC, cpu_h	; ADD A,H
+opc_85:	OPC_ADD_A_R	ADC, cpu_l	; ADD A,L
+opc_86:	OPC_ADD_A_R	ADC32Z, cpu_hl	; ADD A,(HL)
+opc_87:	OPC_ADD_A_R	ADC, cpu_a	; ADD A,A
+opc_88:	OPC_ADC_A_R	ADC, cpu_b	; ADC A,B
+opc_89:	OPC_ADC_A_R	ADC, cpu_c	; ADC A,C
+opc_8A:	OPC_ADC_A_R	ADC, cpu_d	; ADC A,D
+opc_8B:	OPC_ADC_A_R	ADC, cpu_e	; ADC A,E
+opc_8C:	OPC_ADC_A_R	ADC, cpu_h	; ADC A,H
+opc_8D:	OPC_ADC_A_R	ADC, cpu_l	; ADC A,L
+opc_8E:	OPC_ADC_A_R	ADC32Z, cpu_hl	; ADC A,(HL)
+opc_8F:	OPC_ADC_A_R	ADC, cpu_a	; ADC A,A
 opc_90= TODO
 opc_91= TODO
 opc_92= TODO
@@ -585,30 +735,30 @@ opc_9C= TODO
 opc_9D= TODO
 opc_9E= TODO
 opc_9F= TODO
-opc_A0:	OPC_LOGICOP_GEN AND, cpu_b	; AND A,B
-opc_A1:	OPC_LOGICOP_GEN AND, cpu_c	; AND A,C
-opc_A2: OPC_LOGICOP_GEN AND, cpu_d	; AND A,D
-opc_A3: OPC_LOGICOP_GEN AND, cpu_e	; AND A,E
-opc_A4: OPC_LOGICOP_GEN AND, cpu_h	; AND A,H
-opc_A5: OPC_LOGICOP_GEN AND, cpu_l	; AND A,L
-opc_A6:	OPC_LOGICOP_GEN AND32Z, cpu_hl	; AND A,(HL)
-opc_A7: OPC_LOGICOP_GEN AND, cpu_a	; AND A,A
-opc_A8:	OPC_LOGICOP_GEN EOR, cpu_b	; XOR A,B
-opc_A9:	OPC_LOGICOP_GEN EOR, cpu_c	; XOR A,C
-opc_AA: OPC_LOGICOP_GEN EOR, cpu_d	; XOR A,D
-opc_AB: OPC_LOGICOP_GEN EOR, cpu_e	; XOR A,E
-opc_AC: OPC_LOGICOP_GEN EOR, cpu_h	; XOR A,H
-opc_AD: OPC_LOGICOP_GEN EOR, cpu_l	; XOR A,L
-opc_AE:	OPC_LOGICOP_GEN EOR32Z, cpu_hl	; XOR A,(HL)
-opc_AF: OPC_LOGICOP_GEN EOR, cpu_a	; XOR A,A
-opc_B0:	OPC_LOGICOP_GEN ORA, cpu_b	; OR A,B
-opc_B1:	OPC_LOGICOP_GEN ORA, cpu_c	; OR A,C
-opc_B2: OPC_LOGICOP_GEN ORA, cpu_d	; OR A,D
-opc_B3: OPC_LOGICOP_GEN ORA, cpu_e	; OR A,E
-opc_B4: OPC_LOGICOP_GEN ORA, cpu_h	; OR A,H
-opc_B5: OPC_LOGICOP_GEN ORA, cpu_l	; OR A,L
-opc_B6:	OPC_LOGICOP_GEN ORA32Z, cpu_hl	; OR A,(HL)
-opc_B7: OPC_LOGICOP_GEN ORA, cpu_a	; OR A,A
+opc_A0:	OPC_LOGICOP_GEN AND, cpu_b,and_f_tab	; AND A,B
+opc_A1:	OPC_LOGICOP_GEN AND, cpu_c,and_f_tab	; AND A,C
+opc_A2: OPC_LOGICOP_GEN AND, cpu_d,and_f_tab	; AND A,D
+opc_A3: OPC_LOGICOP_GEN AND, cpu_e,and_f_tab	; AND A,E
+opc_A4: OPC_LOGICOP_GEN AND, cpu_h,and_f_tab	; AND A,H
+opc_A5: OPC_LOGICOP_GEN AND, cpu_l,and_f_tab	; AND A,L
+opc_A6:	OPC_LOGICOP_GEN AND32Z, cpu_hl,and_f_tab ; AND A,(HL)
+opc_A7: OPC_LOGICOP_GEN AND, cpu_a,and_f_tab	; AND A,A
+opc_A8:	OPC_LOGICOP_GEN EOR, cpu_b,szp_f_tab	; XOR A,B
+opc_A9:	OPC_LOGICOP_GEN EOR, cpu_c,szp_f_tab	; XOR A,C
+opc_AA: OPC_LOGICOP_GEN EOR, cpu_d,szp_f_tab	; XOR A,D
+opc_AB: OPC_LOGICOP_GEN EOR, cpu_e,szp_f_tab	; XOR A,E
+opc_AC: OPC_LOGICOP_GEN EOR, cpu_h,szp_f_tab	; XOR A,H
+opc_AD: OPC_LOGICOP_GEN EOR, cpu_l,szp_f_tab	; XOR A,L
+opc_AE:	OPC_LOGICOP_GEN EOR32Z, cpu_hl,szp_f_tab	; XOR A,(HL)
+opc_AF: OPC_LOGICOP_GEN EOR, cpu_a,szp_f_tab	; XOR A,A
+opc_B0:	OPC_LOGICOP_GEN ORA, cpu_b,szp_f_tab	; OR A,B
+opc_B1:	OPC_LOGICOP_GEN ORA, cpu_c,szp_f_tab	; OR A,C
+opc_B2: OPC_LOGICOP_GEN ORA, cpu_d,szp_f_tab	; OR A,D
+opc_B3: OPC_LOGICOP_GEN ORA, cpu_e,szp_f_tab	; OR A,E
+opc_B4: OPC_LOGICOP_GEN ORA, cpu_h,szp_f_tab	; OR A,H
+opc_B5: OPC_LOGICOP_GEN ORA, cpu_l,szp_f_tab	; OR A,L
+opc_B6:	OPC_LOGICOP_GEN ORA32Z, cpu_hl,szp_f_tab	; OR A,(HL)
+opc_B7: OPC_LOGICOP_GEN ORA, cpu_a,szp_f_tab	; OR A,A
 opc_B8= TODO	; CP B
 opc_B9= TODO	; CP C
 opc_BA= TODO	; CP D
@@ -623,7 +773,8 @@ opc_C2= opc_JP_NZ			; JP NZ,nn
 opc_C3= opc_JP				; JP nn
 opc_C4= opc_CALL_NZ			; CALL NZ
 opc_C5:	OPC_PUSH_RR	cpu_bc		; PUSH BC
-opc_C6= TODO
+opc_C6:	INW		cpu_pc		; ADD A,n
+	OPC_ADD_A_R	ADC32Z, cpu_pc
 opc_C7:	OPC_RST		$00		; RST 00h
 opc_C8= opc_RET_Z			; RET Z
 opc_C9= opc_RET				; RET
@@ -631,7 +782,8 @@ opc_CA= opc_JP_Z			; JP Z
 opc_CB= opc_JP				; *NON-STANDARD* JP nn	[CB-prefix on Z80]
 opc_CC= opc_CALL_Z			; CALL Z,nn
 opc_CD= opc_CALL			; CALL nn
-opc_CE= TODO
+opc_CE:	INW		cpu_pc		; ADC A,n
+	OPC_ADD_A_R	ADC32Z, cpu_pc
 opc_CF:	OPC_RST		$08		; RST 08h
 opc_D0= opc_RET_NC			; RET NC
 opc_D1:	OPC_POP_RR	cpu_de		; POP DE
@@ -639,7 +791,7 @@ opc_D2= opc_JP_NC			; JP NC,nn
 opc_D3= TODO				; OUT (n),A
 opc_D4= opc_CALL_NC			; CALL NZ,nn
 opc_D5:	OPC_PUSH_RR	cpu_de		; PUSH DE
-opc_D6= TODO
+opc_D6= TODO				; SUB A,byte
 opc_D7:	OPC_RST		$10		; RST 10h
 opc_D8= opc_RET_C			; RET C
 opc_D9= opc_RET				; *NON-STANDARD* RET		[EXX on Z80]
@@ -647,7 +799,7 @@ opc_DA= opc_JP_C			; JP C,nn
 opc_DB= TODO				; IN A,(n)
 opc_DC= opc_CALL_C			; CALL C,nn
 opc_DD= opc_CALL			; *NON-STANDARD* CALL nn	[DD-prefix on Z80]
-opc_DE= TODO
+opc_DE= TODO				; SBC A,byte
 opc_DF:	OPC_RST		$18		; RST 18h
 opc_E0= opc_RET_PO			; RET PO
 opc_E1:	OPC_POP_RR	cpu_hl		; POP HL
@@ -658,7 +810,7 @@ opc_E3:					; EX (SP),HL
 	STA	cpu_l
 	TXA
 	STA32Z	cpu_sp
-	INZ
+	INZ		; Z = 1, next LDA32Z will access (zp pointer)+1
 	LDA32Z	cpu_sp	; (SP+1)<->H
 	LDX	cpu_h
 	STA	cpu_h
@@ -669,10 +821,10 @@ opc_E3:					; EX (SP),HL
 opc_E4= opc_CALL_PO			; CALL PO,nn
 opc_E5:	OPC_PUSH_RR	cpu_hl		; PUSH HL
 opc_E6:	INW		cpu_pc		; AND A,n
-	OPC_LOGICOP_GEN AND32Z, cpu_pc
+	OPC_LOGICOP_GEN AND32Z, cpu_pc, and_f_tab
 opc_E7:	OPC_RST		$20		; RST 20h
 opc_E8= opc_RET_PE			; RET PE
-opc_E9:					; JP (HL), though JP HL is what it actually does, 8080 syntax is: PCHL
+opc_E9:					; JP (HL), though JP HL is what it actually does, 8080 syntax is better this time I think: PCHL
 	LDA	cpu_l
 	STA	cpu_pcl
 	LDA	cpu_h
@@ -692,7 +844,7 @@ opc_EB:					; EX DE,HL
 opc_EC= opc_CALL_PE			; CALL PE,nn
 opc_ED= opc_CALL			; *NON-STANDARD* CALL nn	[ED-prefix on Z80]
 opc_EE:	INW		cpu_pc		; XOR A,n
-	OPC_LOGICOP_GEN EOR32Z, cpu_pc
+	OPC_LOGICOP_GEN EOR32Z, cpu_pc, szp_f_tab
 opc_EF:	OPC_RST		$28		; RST 28h
 opc_F0= opc_RET_P			; RET P
 opc_F1:	OPC_POP_RR	cpu_af		; POP AF
@@ -701,7 +853,7 @@ opc_F3= next_inc1			; DI	!!INTERRUPTS ARE NOT EMULATED!!
 opc_F4= opc_CALL_P			; CALL P,nn
 opc_F5:	OPC_PUSH_RR	cpu_af		; PUSH AF
 opc_F6:	INW		cpu_pc		; OR A,n
-	OPC_LOGICOP_GEN ORA32Z, cpu_pc
+	OPC_LOGICOP_GEN ORA32Z, cpu_pc, szp_f_tab
 opc_F7:	OPC_RST		$30		; RST 30h
 opc_F8= opc_RET_M			; RET M
 opc_F9:					; LD SP,HL
@@ -717,11 +869,15 @@ opc_FD= opc_CALL			; *NON-STANDARD* CALL nn	[FD-prefix on Z80]
 opc_FE= TODO				; CP n
 opc_FF:	OPC_RST		$38		; RST 38h
 
-	
+
+; Call this to start to execute 8080 code. About 8080 memory position see comments at cpu_reset.
+; CPU emulator returns, in case of HALT opcode or any not yet emulated opcode.
+; About these, please read comments at cpu_leave and cpu_unimplemented.
 .EXPORT	cpu_start
 cpu_start:
-	LDZ	#0		; we use Z=0 in *most* cases through the CPU emulation (it may be set temporarly to other values but it must be reset then ASAP!)
+	LDZ	#0		; we use Z=0 in *most* cases through the CPU emulation (it may be set temporarly to other values but it is reset then to zero ASAP!)
 	JMP	next_no_inc
+
 
 .EXPORT cpu_reset
 cpu_reset:
@@ -730,13 +886,22 @@ cpu_reset:
 :	STA	cpu_first,X
 	DEX
 	BPL	:-
-	LDA	#1		; we use the second 64K of M65's memory for 8080 memory ... Yes, that includes colour RAM too, so care should be taken!
+	; "2" as "H16"s: we use the "ROM" of M65 as 8080 memory. That is writable (if enabled) on M65 and with zero wait states, good enough!
+	; Reason: we need a 64K aligned 64K (and linearly!), the first 64K of RAM cannot be used since 0/1 addresses are the CPU port.
+	; The second 64K of RAM would be ok, but then, colour RAM is a bit problematic (if we want to use that area for VIC colour RAM) and
+	; also one wait state for colour RAM. However what is ROM on the C65, on M65 that is writable! So basically it's RAM, and zero
+	; wait state, and no disturbing fixed functionality there like colour RAM or CPU port. So we want to use this!
+	; The most significant byte of linear address is zero already (see above the clear loop of ZP locs!)
+	LDA	#2
 	STA	cpu_bc_H16
 	STA	cpu_de_H16
 	STA	cpu_hl_H16
 	STA	cpu_pc_H16
 	STA	cpu_sp_H16
 	STA	cpu_mem_p_H16
+	; CPU flags on 8080 has an unused always '1' item
+	LDA	#2
+	STA	cpu_f
 	RTS
 	
 ; Please see comments at cpu_leave! The same things.

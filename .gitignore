@@ -11,3 +11,5 @@ debug.log
 xemu-test.snap
 /KICKUP.M65
 /sdcard.img
+*.pyc
+*.pyo
