@@ -39,8 +39,7 @@
 ;
 ; ----------------------------------------------------------------------------
 
-
-.SETCPU "4510"
+.INCLUDE "mega65.inc"
 
 .ZEROPAGE
 
@@ -88,7 +87,7 @@ cpu_last:
 
 .INCLUDE "cpu_tables.inc"
 
-; Mega-65 32 bit linear ops
+; Mega-65 32 bit linear ops from mega65.inc
 ;
 ; NOTE: ZP locations above holds 4 bytes for pointers, the second two bytes
 ; are the higher 16 bits of 32 bits address which is fixed for the emulation,
@@ -101,31 +100,6 @@ cpu_last:
 ; memory acces, but the only sane way to provide full 64K for 8080 and also avoid
 ; memory mapping tricks all the time during the emulation which would be even
 ; much more slower anyway!
-
-.MACRO	LDA32Z	zploc
-	EOM
-	LDA	(zploc),Z
-.ENDMACRO
-.MACRO	STA32Z	zploc
-	EOM
-	STA	(zploc),Z
-.ENDMACRO
-.MACRO	ORA32Z	zploc
-	EOM
-	ORA	(zploc),Z
-.ENDMACRO
-.MACRO	AND32Z	zploc
-	EOM
-	AND	(zploc),Z
-.ENDMACRO
-.MACRO	EOR32Z	zploc
-	EOM
-	EOR	(zploc),Z
-.ENDMACRO
-.MACRO	ADC32Z	zploc
-	EOM
-	ADC	(zploc),Z
-.ENDMACRO
 
 ; Stack byte level POP/PUSH primitives
 
@@ -259,10 +233,9 @@ cpu_last:
 
 .MACRO	ADC_ADD_OPS	addop, value
 	LDA	cpu_a
-	;TAY			; remember original value of cpu_a in Y
 	addop	value		; addop: ADC or ADC32Z (for immed. value or (HL) indexed), for ADC32Z, value must be cpu_pc/cpu_hl pointing to the value itself
 	STA	cpu_a		; this was the easy part, but the flags, oh my!!! :-@
-	;TAX
+	TAX
 	LDA	szp_f_tab,X
 	ADC	#0		; based on the carry of the "main" ADC ("addop") op's result, this will set bit0 of flags (from szp_f_tab) as it was zero before!
 	STA	cpu_f		; store flags: FIXME no Half-carry yet :(
