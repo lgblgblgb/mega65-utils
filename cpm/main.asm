@@ -305,10 +305,8 @@ unimp:
 	WRISTR	{13,"i8080: Unimplemented opcode",13}
 do:
 	JSR	reg_dump
-	WRISTR  {13,"Press a key to reboot.",13}
+	WRISTR  {13,"HALTED.",13}
 halt:
 	INC	$fcf
-	;INC	$D021
-	;JMP	halt
-	JMP	exit_system
+	JMP	halt
 .ENDPROC
