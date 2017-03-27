@@ -25,26 +25,26 @@
 ; Mega-65 32 bit linear ops
 
 .MACRO	LDA32Z	zploc
-	EOM
+	NOP
 	LDA	(zploc),Z
 .ENDMACRO
 .MACRO	STA32Z	zploc
-	EOM
+	NOP
 	STA	(zploc),Z
 .ENDMACRO
 .MACRO	ORA32Z	zploc
-	EOM
+	NOP
 	ORA	(zploc),Z
 .ENDMACRO
 .MACRO	AND32Z	zploc
-	EOM
+	NOP
 	AND	(zploc),Z
 .ENDMACRO
 .MACRO	EOR32Z	zploc
-	EOM
+	NOP
 	EOR	(zploc),Z
 .ENDMACRO
 .MACRO	ADC32Z	zploc
-	EOM
+	NOP
 	ADC	(zploc),Z
 .ENDMACRO

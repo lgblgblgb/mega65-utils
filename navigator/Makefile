@@ -20,7 +20,7 @@ DISK_IMAGE	= navigator.d81
 PRG		= navigator.prg
 PRG_ON_DISK	= navigator
 SOURCES		= $(shell ls *.asm)
-INCLUDES	=
+INCLUDES	= $(shell ls *.inc)
 OBJECTS		= $(SOURCES:.asm=.o)
 XEMU_SNAPSHOT	= xemu-test.snap
 KICKUP		= ../KICKUP.M65
@@ -75,7 +75,7 @@ $(XEMU_SNAPSHOT):
 	@echo "This will write a snapshot file, so next time you will need"
 	@echo "only to hit ENTER to test the new navigator version without"
 	@echo "waiting for M65 to boot, or whatever. After the snapshot creation step,"
-	@echo 'you'll only need to say "make test" to build and test with Xemu.'
+	@echo 'you will only need to say "make test" to build and test with Xemu.'
 	@echo "**** Please hit ENTER now to proceed the described task"
 	@read some
 	$(RM) -f $(XEMU_SNAPSHOT)

@@ -46,39 +46,49 @@
 ; Must be before the first CPU specific ZP label
 cpu_first:
 ; Register pair AF (PSW), not used for indexing, no need for "H16":
+.EXPORTZP	cpu_af
 cpu_af:
 cpu_f:		.RES 1
 cpu_a:		.RES 1
 ; Register pair BC
+.EXPORTZP	cpu_bc
 cpu_bc:
 cpu_c:		.RES 1
 cpu_b:		.RES 1
 cpu_bc_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
 ; Register pair DE
+.EXPORTZP	cpu_de
 cpu_de:
 cpu_e:		.RES 1
 cpu_d:		.RES 1
 cpu_de_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
 ; Register pair HL
+.EXPORTZP	cpu_hl
 cpu_hl:
 cpu_l:		.RES 1
 cpu_h:		.RES 1
 cpu_hl_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
 ; The program counter
+.EXPORTZP	cpu_pc
 cpu_pc:
 cpu_pcl:	.RES 1
 cpu_pch:	.RES 1
 cpu_pc_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
 ; Stack pointer
+.EXPORTZP	cpu_sp
 cpu_sp:
 cpu_spl:	.RES 1
 cpu_sph:	.RES 1
 cpu_sp_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
 ; Memory pointer, used in operations like (1234)
+.EXPORTZP	cpu_mem_p	; this is provided for INITIAL usage of emulator but never after CPU reset!!!
 cpu_mem_p:
 cpu_mem_l:	.RES 1
 cpu_mem_h:	.RES 1
 cpu_mem_p_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
+; Only updated at exit, the CPU opcode (at cpu_pc) which caused the exit of i8080 mode
+.EXPORTZP	cpu_op
+cpu_op:		.RES 1
 ; Must be after the last CPU specific ZP label
 cpu_last:
 
@@ -221,11 +231,10 @@ cpu_last:
 	LDA	z:regpair+1
 	ADC	cpu_h
 	STA	cpu_h
-	LDA	#1	; carry flag mask
 	BCS	:+
-	TRB	cpu_f
+	RMB0	cpu_f
 	JMP	next_inc1
-:	TSB	cpu_f
+:	SMB0	cpu_f
 	JMP	next_inc1
 .ENDMACRO
 
@@ -468,14 +477,12 @@ opc_07:					; RLCA
 	BCS	:+
 	; Carry should be clear, bit 0 of A is OK to leave that way
 	STA	cpu_a
-	LDA	#1
-	TRB	cpu_f
+	RMB0	cpu_f
 	JMP	next_inc1
 :	; Carry to set! bit0 of A should be set!
 	INA	; sets bit0 to 1 since it was zero before
 	STA	cpu_a
-	LDA	#1
-	TSB	cpu_f
+	SMB0	cpu_f
 	JMP	next_inc1
 opc_08= NO_OP				; *NON-STANDARD* NOP	[EX AF,AF' on Z80]
 opc_09: OPC_ADD_HL_RR	cpu_bc		; ADD HL,BC
@@ -490,14 +497,12 @@ opc_0F:					; RRCA
 	BCS	:+
 	; Carry should be clear, bit 7 of A is OK to leave that way
 	STA	cpu_a
-	LDA	#1
-	TRB	cpu_f
+	RMB0	cpu_f
 	JMP	next_inc1
 :	; Carry to set! bit7 of A should be set!
 	ORA	#$80	; sets bit 7 of A
 	STA	cpu_a
-	LDA	#1
-	TSB	cpu_f
+	SMB0	cpu_f
 	JMP	next_inc1
 opc_10= NO_OP				; *NON-STANDARD* NOP	[DJNZ on Z80]
 opc_11: OPC_LD_RR_NN	cpu_de		; LD DE,nn
@@ -593,8 +598,7 @@ opc_35:					; DEC (HL)
 	JMP	next_inc1
 opc_36:	OPC_LD_RI_N	cpu_hl		; LD (HL),n
 opc_37:					; SCF
-	LDA	#1	; 8080 carry bit mask in flags
-	TSB	cpu_f
+	SMB0	cpu_f
 	JMP	next_inc1
 opc_38= NO_OP				; *NON-STANDARD* NOP	[JR C on Z80]
 opc_39:	OPC_ADD_HL_RR	cpu_sp		; ADD HL,SP
@@ -883,6 +887,7 @@ TODO = cpu_unimplemented
 cpu_unimplemented:
 	TXA
 	ROR	A
+	STA	cpu_op
 	SEC		; set carry to signal unimplemented status
 	RTS
 	
@@ -892,5 +897,6 @@ cpu_unimplemented:
 cpu_leave:
 	TXA			; (see next op), though A should contain the same as X, just to be sure anyway ...
 	ROR	A		; Restore original opcode to report for the caller, A still holds the ASL'ed opcode, and carry should be the old 7th bit of the opcode
+	STA	cpu_op
 	CLC			; the opposite situation done in cpu_unimplemented, please see there
 	RTS			; return. caller gets control back here (cpu_start was called) A contains the opcode caused exit, cpu_pc is the PC of opcode
