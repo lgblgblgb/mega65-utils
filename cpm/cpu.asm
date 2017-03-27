@@ -863,13 +863,9 @@ cpu_reset:
 :	STA	cpu_first,X
 	DEX
 	BPL	:-
-	; "2" as "H16"s: we use the "ROM" of M65 as 8080 memory. That is writable (if enabled) on M65 and with zero wait states, good enough!
-	; Reason: we need a 64K aligned 64K (and linearly!), the first 64K of RAM cannot be used since 0/1 addresses are the CPU port.
-	; The second 64K of RAM would be ok, but then, colour RAM is a bit problematic (if we want to use that area for VIC colour RAM) and
-	; also one wait state for colour RAM. However what is ROM on the C65, on M65 that is writable! So basically it's RAM, and zero
-	; wait state, and no disturbing fixed functionality there like colour RAM or CPU port. So we want to use this!
+	; "1" as "H16"s: we use second 64K of "chipram" of M65 for 8080 memory, so colour RAM is there too btw.
 	; The most significant byte of linear address is zero already (see above the clear loop of ZP locs!)
-	LDA	#2
+	LDA	#1
 	STA	cpu_bc_H16
 	STA	cpu_de_H16
 	STA	cpu_hl_H16

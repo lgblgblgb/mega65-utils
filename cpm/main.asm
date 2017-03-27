@@ -292,13 +292,50 @@ cp0:
 
 
 
+
+.PROC	install_software
+	LDA	#0
+	STA	cpu_mem_p+3
+	STA	cpu_mem_p+0
+	LDA	#1
+	STA	cpu_mem_p+2
+	STA	cpu_mem_p+1
+	LDX	#0
+	LDZ	#0
+loop:
+	LDA	i8080_code,X
+	STA32Z	cpu_mem_p
+	INZ
+	INX
+	BNE	loop
+	RTS
+i8080_code:
+	.INCBIN	"8080/cpmver.com"
+.ENDPROC
+
+
+
+
 .PROC	app_main
 	JSR	init_m65_ascii_charset
+	JSR	install_software
 	JSR	clear_screen
 	WRISTR	{"i8080 emulator and CP/M CBIOS for Mega-65 (C)2017 LGB",13}
 	JSR	cpu_reset
+	LDA	#1
+	STA	cpu_pc+1	; reset address was 0, now with high byte modified to 1, it's 0x100, the start address of CP/M programs.
+	WRISTR	{"Entering into i8080 mode",13,13}
+run:
 	JSR	cpu_start
-	BCS	unimp
+	BCS	unimp	; check the reason of exit in the emulator
+	LDA	cpu_sp+1
+	CMP	#$FF
+	BEQ	really_end
+	INW	cpu_pc	; jump HALT opcode
+	LDA	cpu_af+1	; load A register
+	JSR	write_char
+	JMP	run
+really_end:
 	WRISTR	{13,"i8080: normal emulation exit",13}
 	JMP	do
 unimp:

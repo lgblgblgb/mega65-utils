@@ -52,6 +52,8 @@ cpu_tables.inc: cpu_gen_tables.py $(ALL_DEPENDS)
 %.o: %.asm $(ALL_DEPENDS) $(INCLUDES)
 	$(CA65) $(CA65_OPTS) -o $@ $<
 
+main.o: 8080/*.com
+
 $(PRG): $(OBJECTS) $(LD65_CFG) $(ALL_DEPENDS)
 	$(LD65) $(LD65_OPTS) -o $@ $(OBJECTS)
 
