@@ -238,9 +238,9 @@ cpu_last:
 	JMP	next_inc1
 .ENDMACRO
 
-; 8 bit "ADD" operations
+; 8 bit "ADD" operations (ADD/ADC)
 
-.MACRO	ADC_ADD_OPS	addop, value
+.MACRO	ADC_ADD_A_OPS	addop, value
 	LDA	cpu_a
 	addop	value		; addop: ADC or ADC32Z (for immed. value or (HL) indexed), for ADC32Z, value must be cpu_pc/cpu_hl pointing to the value itself
 	STA	cpu_a		; this was the easy part, but the flags, oh my!!! :-@
@@ -254,7 +254,7 @@ cpu_last:
 .ENDMACRO
 .MACRO	OPC_ADD_A_R	addop, value
 	CLC
-	ADC_ADD_OPS	addop, value
+	ADC_ADD_A_OPS	addop, value
 	JMP		next_inc1
 .ENDMACRO
 .MACRO	OPC_ADC_A_R	addop, value
@@ -262,11 +262,42 @@ cpu_last:
 	LDA		cpu_f
 	LSR		A
 	; Now the operation
-	ADC_ADD_OPS	addop, value
+	ADC_ADD_A_OPS	addop, value
 	JMP		next_inc1
 .ENDMACRO
 
+; 8 bit "SUB" operations (SUB/SBC) and also "CP" (which is basically a SUB, just not stores the result)
 
+.MACRO SUB_SBC_CP_A_OPS	store, subop, value
+	LDA	cpu_a
+	subop	value		; subop: SBC or SBC32Z (for immed. value or (HL) indexed), for SBC32Z, value must be cpu_pc/cpu_hl pointing to the value itself
+	;.IFNBLANK store
+	store			; should be "STA cpu_a" to store the result (SUB/SBC) or nothing in case of CP op
+	;.ENDIF
+	TAX
+	LDA	szp_f_tab,X
+	INA			; set 8080 carry by default
+	SBC	#0		; set Carry for 8080, based on the "subop" opcode's carry, but we must "revese" it as 65xx notion is "borrow" for substract on carry
+	STA	cpu_f
+	; FIXME: H is not handled yet!!!!!!!!!
+.ENDMACRO
+.MACRO OPC_SUB_A_R	subop, value
+	SEC
+	SUB_SBC_CP_A_OPS  STA cpu_a,subop,value
+	JMP	next_inc1
+.ENDMACRO
+.MACRO OPC_SBC_A_R	subop, value
+	LDA	cpu_f
+	INA		; incrementing something will reverse bit0 for us :) :)
+	LSR	A	; now 65xx carry contains the inverse of the 8080 carry needed for the inversed notion of SBC for carry on 65xx CPUs
+	SUB_SBC_CP_A_OPS ,subop,value 	; first parameter is empty!!
+	JMP	next_inc1
+.ENDMACRO
+.MACRO OPC_CP_A_R	subop, value
+	SEC
+	SUB_SBC_CP_A_OPS ,subop,value	; first parameter is empty!!
+	JMP	next_inc1
+.ENDMACRO
 
 ; RST "generator"
 
@@ -362,10 +393,9 @@ next_no_inc:
 	LDA32Z	cpu_pc				; fetch opcode byte
 	ASL	A				; multiply by two, since word based table. Old 7th bit is the carry flag now
 	TAX					; prepare for the JMP (nnnn,X) opcode
-	BCC	@ops_low_half			; we have 256 ops, but because of ASL, we must halve their handling (see comment at ASL above about carry)
+	BCC	:+				; we have 256 ops, but because of ASL, we must halve their handling (see comment at ASL above about carry)
 	JMP	(opcode_jump_table+$100,X)	; upper half of the opcodes
-@ops_low_half:
-	JMP	(opcode_jump_table,X)		; lower half of the opcodes
+:	JMP	(opcode_jump_table,X)		; lower half of the opcodes
 
 NO_OP	= next_inc1
 
@@ -467,7 +497,7 @@ opc_RET:
 opc_00= NO_OP				; NOP	(no-effect opcodes can refeer for the main opcode fetch entry point itself, simply ...)
 opc_01:	OPC_LD_RR_NN	cpu_bc		; LD BC,nn
 opc_02:	OPC_LD_RI_R	cpu_bc, cpu_a	; LD (BC),A
-opc_03:	OPC_INC_RR	cpu_bc		; INC BC, 8080 syntax: INX B
+opc_03:	OPC_INC_RR	cpu_bc		; INC BC
 opc_04: OPC_INC_R	cpu_b		; INC B
 opc_05: OPC_DEC_R	cpu_b		; DEC B
 opc_06:	OPC_LD_R_N	cpu_b		; LD B,n
@@ -696,22 +726,22 @@ opc_8C:	OPC_ADC_A_R	ADC, cpu_h	; ADC A,H
 opc_8D:	OPC_ADC_A_R	ADC, cpu_l	; ADC A,L
 opc_8E:	OPC_ADC_A_R	ADC32Z, cpu_hl	; ADC A,(HL)
 opc_8F:	OPC_ADC_A_R	ADC, cpu_a	; ADC A,A
-opc_90= TODO
-opc_91= TODO
-opc_92= TODO
-opc_93= TODO
-opc_94= TODO
-opc_95= TODO
-opc_96= TODO
-opc_97= TODO
-opc_98= TODO
-opc_99= TODO
-opc_9A= TODO
-opc_9B= TODO
-opc_9C= TODO
-opc_9D= TODO
-opc_9E= TODO
-opc_9F= TODO
+opc_90:	OPC_SUB_A_R	SBC, cpu_b	; SUB A,B
+opc_91:	OPC_SUB_A_R	SBC, cpu_c	; SUB A,C
+opc_92:	OPC_SUB_A_R	SBC, cpu_d	; SUB A,D
+opc_93:	OPC_SUB_A_R	SBC, cpu_e	; SUB A,E
+opc_94:	OPC_SUB_A_R	SBC, cpu_h	; SUB A,H
+opc_95:	OPC_SUB_A_R	SBC, cpu_l	; SUB A,L
+opc_96:	OPC_SUB_A_R	SBC32Z, cpu_hl	; SUB A,(HL)
+opc_97:	OPC_SUB_A_R	SBC, cpu_a	; SUB A,A
+opc_98:	OPC_SBC_A_R	SBC, cpu_b	; SBC A,B
+opc_99:	OPC_SBC_A_R	SBC, cpu_c	; SBC A,C
+opc_9A:	OPC_SBC_A_R	SBC, cpu_d	; SBC A,D
+opc_9B:	OPC_SBC_A_R	SBC, cpu_e	; SBC A,E
+opc_9C:	OPC_SBC_A_R	SBC, cpu_h	; SBC A,H
+opc_9D:	OPC_SBC_A_R	SBC, cpu_l	; SBC A,L
+opc_9E:	OPC_SBC_A_R	SBC32Z, cpu_hl	; SBC A,(HL)
+opc_9F:	OPC_SBC_A_R	SBC, cpu_a	; SBC A,A
 opc_A0:	OPC_LOGICOP_GEN AND, cpu_b,and_f_tab	; AND A,B
 opc_A1:	OPC_LOGICOP_GEN AND, cpu_c,and_f_tab	; AND A,C
 opc_A2: OPC_LOGICOP_GEN AND, cpu_d,and_f_tab	; AND A,D
@@ -719,7 +749,12 @@ opc_A3: OPC_LOGICOP_GEN AND, cpu_e,and_f_tab	; AND A,E
 opc_A4: OPC_LOGICOP_GEN AND, cpu_h,and_f_tab	; AND A,H
 opc_A5: OPC_LOGICOP_GEN AND, cpu_l,and_f_tab	; AND A,L
 opc_A6:	OPC_LOGICOP_GEN AND32Z, cpu_hl,and_f_tab ; AND A,(HL)
-opc_A7: OPC_LOGICOP_GEN AND, cpu_a,and_f_tab	; AND A,A
+opc_A7:						; AND A,A
+	; AND A: "A" is not changed, just flags need to be set
+	LDX	cpu_a
+	LDA	and_f_tab,X
+	STA	cpu_f
+	JMP	next_inc1
 opc_A8:	OPC_LOGICOP_GEN EOR, cpu_b,szp_f_tab	; XOR A,B
 opc_A9:	OPC_LOGICOP_GEN EOR, cpu_c,szp_f_tab	; XOR A,C
 opc_AA: OPC_LOGICOP_GEN EOR, cpu_d,szp_f_tab	; XOR A,D
@@ -727,7 +762,12 @@ opc_AB: OPC_LOGICOP_GEN EOR, cpu_e,szp_f_tab	; XOR A,E
 opc_AC: OPC_LOGICOP_GEN EOR, cpu_h,szp_f_tab	; XOR A,H
 opc_AD: OPC_LOGICOP_GEN EOR, cpu_l,szp_f_tab	; XOR A,L
 opc_AE:	OPC_LOGICOP_GEN EOR32Z, cpu_hl,szp_f_tab	; XOR A,(HL)
-opc_AF: OPC_LOGICOP_GEN EOR, cpu_a,szp_f_tab	; XOR A,A
+opc_AF:						; XOR A,A
+	; XOR A: This is a common trick to zero "A". Let's handle that way, faster!
+	STZ	cpu_a
+	LDA	#70	; FIXME: is this right? (actually the byte at szp_f_tab - since A = 0 -, just immed value is faster and also shorter ...)
+	STA	cpu_f
+	JMP	next_inc1
 opc_B0:	OPC_LOGICOP_GEN ORA, cpu_b,szp_f_tab	; OR A,B
 opc_B1:	OPC_LOGICOP_GEN ORA, cpu_c,szp_f_tab	; OR A,C
 opc_B2: OPC_LOGICOP_GEN ORA, cpu_d,szp_f_tab	; OR A,D
@@ -735,15 +775,20 @@ opc_B3: OPC_LOGICOP_GEN ORA, cpu_e,szp_f_tab	; OR A,E
 opc_B4: OPC_LOGICOP_GEN ORA, cpu_h,szp_f_tab	; OR A,H
 opc_B5: OPC_LOGICOP_GEN ORA, cpu_l,szp_f_tab	; OR A,L
 opc_B6:	OPC_LOGICOP_GEN ORA32Z, cpu_hl,szp_f_tab	; OR A,(HL)
-opc_B7: OPC_LOGICOP_GEN ORA, cpu_a,szp_f_tab	; OR A,A
-opc_B8= TODO	; CP B
-opc_B9= TODO	; CP C
-opc_BA= TODO	; CP D
-opc_BB= TODO	; CP E
-opc_BC= TODO	; CP H
-opc_BD= TODO	; CP L
-opc_BE= TODO	; CP (HL)
-opc_BF= TODO	; CP A
+opc_B7:						; OR A,A
+	; OR A: "A" is not changed, however this is a common trick to set Z flag etc based on "A" reg
+	LDX	cpu_a
+	LDA	szp_f_tab,X
+	STA	cpu_f
+	JMP	next_inc1
+opc_B8:	OPC_CP_A_R	SBC, cpu_b	; CP B
+opc_B9:	OPC_CP_A_R	SBC, cpu_c	; CP C
+opc_BA:	OPC_CP_A_R	SBC, cpu_d	; CP D
+opc_BB:	OPC_CP_A_R	SBC, cpu_e	; CP E
+opc_BC:	OPC_CP_A_R	SBC, cpu_h	; CP H
+opc_BD:	OPC_CP_A_R	SBC, cpu_l	; CP L
+opc_BE:	OPC_CP_A_R	SBC32Z, cpu_hl	; CP (HL)
+opc_BF:	OPC_CP_A_R	SBC, cpu_a	; CP A
 opc_C0= opc_RET_NZ			; RET NZ
 opc_C1:	OPC_POP_RR	cpu_bc		; POP BC
 opc_C2= opc_JP_NZ			; JP NZ,nn
@@ -760,7 +805,7 @@ opc_CB= opc_JP				; *NON-STANDARD* JP nn	[CB-prefix on Z80]
 opc_CC= opc_CALL_Z			; CALL Z,nn
 opc_CD= opc_CALL			; CALL nn
 opc_CE:	INW		cpu_pc		; ADC A,n
-	OPC_ADD_A_R	ADC32Z, cpu_pc
+	OPC_ADC_A_R	ADC32Z, cpu_pc
 opc_CF:	OPC_RST		$08		; RST 08h
 opc_D0= opc_RET_NC			; RET NC
 opc_D1:	OPC_POP_RR	cpu_de		; POP DE
@@ -768,7 +813,8 @@ opc_D2= opc_JP_NC			; JP NC,nn
 opc_D3= TODO				; OUT (n),A
 opc_D4= opc_CALL_NC			; CALL NZ,nn
 opc_D5:	OPC_PUSH_RR	cpu_de		; PUSH DE
-opc_D6= TODO				; SUB A,byte
+opc_D6:	INW		cpu_pc		; SUB A,byte
+	OPC_SUB_A_R	SBC32Z, cpu_pc
 opc_D7:	OPC_RST		$10		; RST 10h
 opc_D8= opc_RET_C			; RET C
 opc_D9= opc_RET				; *NON-STANDARD* RET		[EXX on Z80]
@@ -776,7 +822,8 @@ opc_DA= opc_JP_C			; JP C,nn
 opc_DB= TODO				; IN A,(n)
 opc_DC= opc_CALL_C			; CALL C,nn
 opc_DD= opc_CALL			; *NON-STANDARD* CALL nn	[DD-prefix on Z80]
-opc_DE= TODO				; SBC A,byte
+opc_DE:	INW		cpu_pc		; SBC A,byte
+	OPC_SBC_A_R	SBC32Z, cpu_pc
 opc_DF:	OPC_RST		$18		; RST 18h
 opc_E0= opc_RET_PO			; RET PO
 opc_E1:	OPC_POP_RR	cpu_hl		; POP HL
@@ -843,7 +890,8 @@ opc_FA= opc_JP_M			; JP M,nn
 opc_FB= next_inc1			; EI	!!INTERRUPTS ARE NOT EMULATED!!
 opc_FC= opc_CALL_M			; CALL M,nn
 opc_FD= opc_CALL			; *NON-STANDARD* CALL nn	[FD-prefix on Z80]
-opc_FE= TODO				; CP n
+opc_FE:	INW	cpu_pc			; CP n
+	OPC_CP_A_R	SBC32Z,cpu_pc
 opc_FF:	OPC_RST		$38		; RST 38h
 
 

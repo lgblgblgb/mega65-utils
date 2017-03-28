@@ -156,9 +156,11 @@ write_hex_nib:
 	BCC	write_char
 	ADC	#6
 .PROC write_char
-	PHX
 	CMP	#13
-	BEQ	eol
+	BEQ	cr_char
+	PHX
+	CMP	#10
+	BEQ	lf_char
 	PHA
 	; load address
 	LDX	cursor_y
@@ -169,35 +171,66 @@ write_hex_nib:
 	LDX	cursor_x
 	PLA
 	AND	#$7F
+	;TAX
+	;LDA	ascii_to_screencodes-$20,X
 	self_addr = * + 1
 	STA	$8000,X
+	CPX	#79
+	BEQ	eol
 	INX
-	CPX	#80
-	BNE	not_eol
-eol:
-	LDX	cursor_y
-	INX
-	CPX	#25
-	BNE	no_scroll
-	JSR	screen_scroll
-	LDX	#24
-no_scroll:
-	STX	cursor_y
-	LDX	#0	; cursor x
-not_eol:
 	STX	cursor_x
 	PLX
+	RTS
+eol:
+	LDA	#0
+	STA	cursor_x
+lf_char:
+	LDA	cursor_y
+	CMP	#24
+	BEQ	scroll
+	INA
+	STA	cursor_y
+	PLX
+	RTS
+	; Start of scrolling of screen
+scroll:
+	LDX	#0
+scroll0:
+	LDA	$850,X
+	STA	$800,X
+	LDA	$950,X
+	STA	$900,X
+	LDA	$A50,X
+	STA	$A00,X
+	LDA	$B50,X
+	STA	$B00,X
+	LDA	$C50,X
+	STA	$C00,X
+	LDA	$D50,X
+	STA	$D00,X
+	LDA	$E50,X
+	STA	$E00,X
+	LDA	$F50,X
+	STA	$F00,X
+	INX
+	BNE	scroll0
+	LDA	#32
+scroll1:
+	STA	$F80,X
+	INX
+	CPX	#80
+	BNE	scroll1
+	; end of scrolling of screen
+	PLX
+	RTS
+cr_char:
+	LDA	#0
+	STA	cursor_x
 	RTS
 screen_line_tab_lo:
 	.BYTE	$0,$50,$a0,$f0,$40,$90,$e0,$30,$80,$d0,$20,$70,$c0,$10,$60,$b0,$0,$50,$a0,$f0,$40,$90,$e0,$30,$80
 screen_line_tab_hi:
 	.BYTE	$8,$8,$8,$8,$9,$9,$9,$a,$a,$a,$b,$b,$b,$c,$c,$c,$d,$d,$d,$d,$e,$e,$e,$f,$f
-.ENDPROC
-
-
-.PROC	screen_scroll
-	; TODO
-	RTS
 .ENDPROC
 
 
@@ -314,35 +347,40 @@ i8080_code:
 .ENDPROC
 
 
+; This test version runs 8080 code wich uses HALT opcode to return from emulation
+; The odd theory now: if high byte of 8080 SP is set to $FF then it means exit
+; program, otherwise "A" register should be printed on the screen. yeah, it's far
+; from anything to be a normal behaviour but now this is the fastest way around
+; to test basic 8080 emulation stuffs before CP/M specific projects ...
 
 
 .PROC	app_main
 	JSR	init_m65_ascii_charset
 	JSR	install_software
 	JSR	clear_screen
-	WRISTR	{"i8080 emulator and CP/M CBIOS for Mega-65 (C)2017 LGB",13}
+	WRISTR	{"i8080 emulator and CP/M CBIOS for Mega-65 (C)2017 LGB",13,10}
 	JSR	cpu_reset
 	LDA	#1
 	STA	cpu_pc+1	; reset address was 0, now with high byte modified to 1, it's 0x100, the start address of CP/M programs.
-	WRISTR	{"Entering into i8080 mode",13,13}
+	WRISTR	{"Entering into i8080 mode",13,10,13,10}
 run:
 	JSR	cpu_start
 	BCS	unimp	; check the reason of exit in the emulator
 	LDA	cpu_sp+1
 	CMP	#$FF
 	BEQ	really_end
-	INW	cpu_pc	; jump HALT opcode
+	INW	cpu_pc		; we need increment PC, otherwise we would re-execute the HALT again.
 	LDA	cpu_af+1	; load A register
 	JSR	write_char
 	JMP	run
 really_end:
-	WRISTR	{13,"i8080: normal emulation exit",13}
+	WRISTR	{13,10,"i8080: normal emulation exit",13,10}
 	JMP	do
 unimp:
-	WRISTR	{13,"i8080: Unimplemented opcode",13}
+	WRISTR	{13,10,"i8080: Unimplemented opcode",13,10}
 do:
 	JSR	reg_dump
-	WRISTR  {13,"HALTED.",13}
+	WRISTR  {13,10,"HALTED.",13,10}
 halt:
 	INC	$fcf
 	JMP	halt

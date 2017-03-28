@@ -15,7 +15,7 @@
 
 
 text:
-	DB	"Hi, this is a simple CP/M program (for 8080 CPU), CPMVER.COM ",13,"89AB=",0
+	DB	"Hi, this is a simple CP/M program (for 8080 CPU), CPMVER.COM ",13,10,"89AB=",0
 
 
 ; We use our OWN function by will.

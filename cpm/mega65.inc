@@ -48,3 +48,7 @@
 	NOP
 	ADC	(zploc),Z
 .ENDMACRO
+.MACRO	SBC32Z	zploc
+	NOP
+	SBC	(zploc),Z
+.ENDMACRO

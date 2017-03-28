@@ -1,4 +1,12 @@
 #!/usr/bin/env python
+"""
+Some table generators for 8080 CPU emulator/Mega-65
+(C)2017 LGB Gabor Lenart
+Note: these in fact can be implemented in assembly
+in M65 code at pre-init time still shorter than storing
+these tables. But currently it's more flexible and bug-free
+to use pre-generated tables!
+"""
 
 inc8_f_tab = [None] * 0x100
 dec8_f_tab = [None] * 0x100
