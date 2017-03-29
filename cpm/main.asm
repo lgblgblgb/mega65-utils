@@ -28,9 +28,10 @@
 
 
 .INCLUDE "mega65.inc"
+.INCLUDE "emu.inc"
+.INCLUDE "console.inc"
 
 
-.EXPORT app_main
 .IMPORT cpu_reset
 .IMPORT cpu_start
 .IMPORT exit_system
@@ -40,311 +41,89 @@
 .IMPORTZP cpu_hl
 .IMPORTZP cpu_pc
 .IMPORTZP cpu_sp
-.IMPORTZP cpu_mem_p
 .IMPORTZP cpu_op
+.IMPORTZp umem_p1
 
 
-.ZEROPAGE
-
-string_p:	.RES 2
-cursor_x:	.RES 1
-cursor_y:	.RES 1
-
-
-.CODE
-
-; Note about screen routines: these are highly unoptimazed, the main focus is on CPU emulator
-; Surely at many places (scroll, fill) DMA can be more useful. I wait for that to create
-; a "library" with possible detecting/using new and old DMA revisions as well. Honestly, I just
-; coded it what ideas I have without too much thinking, to allow to focus on the more important
-; and speed sensitive part (i8080 emulation). So there is huge amount room here for more sane
-; and optimized solution!
-
-; Currently we don't handle colours etc anything, but full colour RAM anyway with a consistent colour
-clear_screen:
-	LDA	#1
-	TSB	$D030		; switch on full 2K colour RAM
-	LDA	#$08
-	STA	@vhi
-	LDA	#$D8
-	STA	@chi
-	LDA	#32
-	LDX	#0
-	STX	cursor_x
-	STX	cursor_y
-	LDY	#8
-	LDZ	#1
-@loop:
-	@vhi = * + 2
-	STA	$0800,X
-	@chi = * + 2
-	STZ	$D800,X
-	INX
-	BNE	@loop
-	INC	@vhi
-	INC	@chi
-	DEY
-	BNE	@loop
-	LDA	#1
-	TRB	$D030		; OK, release colour RAM, so CIA1/CIA2 can be seen again
-	RTS
-
-
-
-write_inline_string:
-	PLA
-	STA	string_p
-	PLA
-	STA	string_p+1
-	PHZ
-	LDZ	#0
-@loop:
-	INW	string_p
-	LDA	(string_p),Z
-	BEQ	@eos
-	JSR	write_char
-	JMP	@loop
-@eos:
-	INW	string_p
-	PLZ
-	JMP	(string_p)
-
-
-write_string:
-	PHZ
-	LDZ	#0
-@loop:
-	LDA	(string_p),Z
-	BEQ	@eos
-	JSR	write_char
-	INZ
-	BNE	@loop
-@eos:
-	PLZ
-	RTS
-
-
-.PROC write_hex_word_at_zp
-	PHX
-	TAX
-	LDA	z:1,X
-	JSR	write_hex_byte
-that:
-	LDA	z:0,X
-	JSR	write_hex_byte
-	PLX
-	RTS
-.ENDPROC
-
-write_hex_byte_at_zp:
-	PHX
-	TAX
-	BSR	write_hex_word_at_zp::that
-
-write_hex_byte:
-	PHA
-	LSR	A
-	LSR	A
-	LSR	A
-	LSR	A
-	JSR	write_hex_nib
-	PLA
-write_hex_nib:
-	AND	#$F
-	ORA	#'0'
-	CMP	#'9'+1
-	BCC	write_char
-	ADC	#6
-.PROC write_char
-	CMP	#13
-	BEQ	cr_char
-	PHX
-	CMP	#10
-	BEQ	lf_char
-	PHA
-	; load address
-	LDX	cursor_y
-	LDA	screen_line_tab_lo,X
-	STA	self_addr
-	LDA	screen_line_tab_hi,X
-	STA	self_addr+1
-	LDX	cursor_x
-	PLA
-	AND	#$7F
-	;TAX
-	;LDA	ascii_to_screencodes-$20,X
-	self_addr = * + 1
-	STA	$8000,X
-	CPX	#79
-	BEQ	eol
-	INX
-	STX	cursor_x
-	PLX
-	RTS
-eol:
-	LDA	#0
-	STA	cursor_x
-lf_char:
-	LDA	cursor_y
-	CMP	#24
-	BEQ	scroll
-	INA
-	STA	cursor_y
-	PLX
-	RTS
-	; Start of scrolling of screen
-scroll:
-	LDX	#0
-scroll0:
-	LDA	$850,X
-	STA	$800,X
-	LDA	$950,X
-	STA	$900,X
-	LDA	$A50,X
-	STA	$A00,X
-	LDA	$B50,X
-	STA	$B00,X
-	LDA	$C50,X
-	STA	$C00,X
-	LDA	$D50,X
-	STA	$D00,X
-	LDA	$E50,X
-	STA	$E00,X
-	LDA	$F50,X
-	STA	$F00,X
-	INX
-	BNE	scroll0
-	LDA	#32
-scroll1:
-	STA	$F80,X
-	INX
-	CPX	#80
-	BNE	scroll1
-	; end of scrolling of screen
-	PLX
-	RTS
-cr_char:
-	LDA	#0
-	STA	cursor_x
-	RTS
-screen_line_tab_lo:
-	.BYTE	$0,$50,$a0,$f0,$40,$90,$e0,$30,$80,$d0,$20,$70,$c0,$10,$60,$b0,$0,$50,$a0,$f0,$40,$90,$e0,$30,$80
-screen_line_tab_hi:
-	.BYTE	$8,$8,$8,$8,$9,$9,$9,$a,$a,$a,$b,$b,$b,$c,$c,$c,$d,$d,$d,$d,$e,$e,$e,$f,$f
-.ENDPROC
-
-
-
-.MACRO	WRISTR	str
-	JSR	write_inline_string
-	.BYTE	str
-	.BYTE	0
-.ENDMACRO
-
-
-
-.PROC init_m65_ascii_charset
-	; Turn C64 charset at $D000 for starting point of modification
-	LDA	#1
-	STA	1
-	; We use charset "WOM" @ $0FF7 Exxx of M65 directly via linear addressing
-	; to submit new charset based on "sliced" original one from C64 ROM
-	; Since WOM is "write-only" memory, we need a source, that is C64 charset ROM.
-	LDA	#$F7
-	STA	cpu_mem_p+2
-	LDA	#$0F
-	STA	cpu_mem_p+3
-	LDZ	#0
-	LDX	#0
-	STZ	cpu_mem_p
-cp0:
-	; ***
-	LDY	#$E0
-	STY	cpu_mem_p+1
-	LDA	#$FF
-	STA32Z	cpu_mem_p		; well, that's only for making sure chars 0-31 are "blank" to catch problems, etc?
-	; ***
-	INY
-	STY	cpu_mem_p+1
-	LDA	$D000+32*8,X
-	STA32Z	cpu_mem_p
-	; ***
-	INY
-	STY	cpu_mem_p+1
-	LDA	$D000,X
-	STA32Z	cpu_mem_p
-	; ***
-	INY
-	STY	cpu_mem_p+1
-	LDA	$D800,X
-	STA32Z	cpu_mem_p
-	INX
-	INZ
-	BNE	cp0
-	; All RAM, but I/O?
-	LDA	#5
-	STA	1
-	RTS
-.ENDPROC
-
-
-.PROC	restore_m65_charset
-	; TODO
-.ENDPROC
-
-
-
-
-.PROC	reg_dump
-	WRISTR	"OP="
-	LDA	cpu_op
-	JSR	write_hex_byte
-	WRISTR	" PC="
-	LDA	#cpu_pc
-	JSR	write_hex_word_at_zp
-	WRISTR	" SP="
-	LDA	#cpu_sp
-	JSR	write_hex_word_at_zp
-	WRISTR	" AF="
-	LDA	#cpu_af
-	JSR	write_hex_word_at_zp
-	WRISTR	" BC="
-	LDA	#cpu_bc
-	JSR	write_hex_word_at_zp
-	WRISTR	" DE="
-	LDA	#cpu_de
-	JSR	write_hex_word_at_zp
-	WRISTR	" HL="
-	LDA	#cpu_hl
-	JSR	write_hex_word_at_zp
-	LDA	#13
-	JMP	write_char
-.ENDPROC
-
-
-
-
-
-
+; Needs CPU reset for umem_p1 initialized for bank
+.EXPORT	install_software
 .PROC	install_software
+	; Clear whole RAM, up to (but not including) SYSPAGE
 	LDA	#0
-	STA	cpu_mem_p+3
-	STA	cpu_mem_p+0
-	LDA	#1
-	STA	cpu_mem_p+2
-	STA	cpu_mem_p+1
-	LDX	#0
+	TAZ
+	TAX
+clear1:
+	STX	umem_p1+1
+clear2:
+	STA32Z	umem_p1
+	INZ
+	BNE	clear2
+	INX
+	CPX	#SYSPAGE
+	BNE	clear1
+	; Prepare upper system page
+	STX	umem_p1+1
 	LDZ	#0
-loop:
-	LDA	i8080_code,X
-	STA32Z	cpu_mem_p
+	LDY	#$C0
+fillsyspage1:
+	LDA	#JP_OPC_8080
+	STA32Z	umem_p1
+	INZ
+	TYA
+	STA32Z	umem_p1
+	INZ
+	LDA	#SYSPAGE
+	STA32Z	umem_p1
+	INZ
+	INY
+	BNE	fillsyspage1
+	LDA	#HALT_OPC_8080
+fillsyspage2:
+	STA32Z	umem_p1
+	INZ
+	BNE	fillsyspage2
+	; Prepare lower system page
+	LDA	#0
+	STA	umem_p1+1
+	TAX
+	TAZ
+fillzeropage:
+	LDA	lowpage,X
+	STA32Z	umem_p1
 	INZ
 	INX
-	BNE	loop
+	CPX	#lowpage_bytes
+	BNE	fillzeropage
+	; Copy program to be executed
+	LDX	#1
+	STX	umem_p1+1
+	DEX
+	LDZ	#0
+	LDY	#i8080_code_pages
+uploadloop:
+	LDA	i8080_code,X
+	STA32Z	umem_p1
+	INZ
+	INX
+	BNE	uploadloop
+	INC	umem_p1+1
+	INC	uploadloop+2
+	DEY
+	BNE	uploadloop
 	RTS
+lowpage:
+	.BYTE	JP_OPC_8080, 2 * 3, SYSPAGE	; CP/M BIOS WARM boot entry point
+	.BYTE	0, 0	; I/O byte and disk byte
+	.BYTE	JP_OPC_8080, 0 * 3, SYSPAGE	; CP/M BDOS entry point
+lowpage_bytes = * - lowpage
 i8080_code:
-	.INCBIN	"8080/cpmver.com"
+	;.INCBIN "8080/cpmver.com"
+	.INCBIN "8080/cpmver-real.com"
+	;.INCBIN "8080/mbasic-real.com"
+i8080_code_pages = (* - i8080_code) + 1
 .ENDPROC
+
+
 
 
 ; This test version runs 8080 code wich uses HALT opcode to return from emulation
@@ -353,35 +132,43 @@ i8080_code:
 ; from anything to be a normal behaviour but now this is the fastest way around
 ; to test basic 8080 emulation stuffs before CP/M specific projects ...
 
-
+.EXPORT	app_main
 .PROC	app_main
 	JSR	init_m65_ascii_charset
-	JSR	install_software
-	JSR	clear_screen
+	JSR	clear_screen	; the fist call of this initiailizes console out functions
 	WRISTR	{"i8080 emulator and CP/M CBIOS for Mega-65 (C)2017 LGB",13,10}
 	JSR	cpu_reset
+	JSR	install_software
 	LDA	#1
 	STA	cpu_pc+1	; reset address was 0, now with high byte modified to 1, it's 0x100, the start address of CP/M programs.
 	WRISTR	{"Entering into i8080 mode",13,10,13,10}
 run:
 	JSR	cpu_start
-	BCS	unimp	; check the reason of exit in the emulator
-	LDA	cpu_sp+1
-	CMP	#$FF
-	BEQ	really_end
-	INW	cpu_pc		; we need increment PC, otherwise we would re-execute the HALT again.
-	LDA	cpu_af+1	; load A register
-	JSR	write_char
-	JMP	run
-really_end:
-	WRISTR	{13,10,"i8080: normal emulation exit",13,10}
-	JMP	do
-unimp:
-	WRISTR	{13,10,"i8080: Unimplemented opcode",13,10}
-do:
+	LBCS	error_unimp	; check the reason of exit in the emulator, if Carry is set, then unimplemented opcode found!
+	; Now next task is check where it happened
+	LDA	cpu_pc+1
+	CMP	#SYSPAGE
+	BNE	error_nosyspage
+	LDA	cpu_pc
+	AND	#$3F
+	BEQ	cpm_bdos_entry
+	JMP	error_no_bios
+error_no_bios:
+	WRISTR	{13,10,"*** BIOS is not emulated yet",13,10}
+	JMP	halt
+cpm_bdos_entry = error_no_bdos
+error_no_bdos:
+	WRISTR	{13,10,"*** BDOS is not emulated yet",13,10}
+	JMP	halt
+error_nosyspage:
+	WRISTR	{13,10,"*** Emulation trap not on the system page",13,10}
+	JMP	halt
+error_unimp:
+	WRISTR	{13,10,"*** Unimplemented i8080 opcode",13,10}
+halt:
 	JSR	reg_dump
 	WRISTR  {13,10,"HALTED.",13,10}
-halt:
+halted_loop:
 	INC	$fcf
-	JMP	halt
+	JMP	halted_loop
 .ENDPROC

@@ -40,6 +40,7 @@
 ; ----------------------------------------------------------------------------
 
 .INCLUDE "mega65.inc"
+.INCLUDE "emu.inc"
 
 .ZEROPAGE
 
@@ -81,11 +82,18 @@ cpu_spl:	.RES 1
 cpu_sph:	.RES 1
 cpu_sp_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
 ; Memory pointer, used in operations like (1234)
-.EXPORTZP	cpu_mem_p	; this is provided for INITIAL usage of emulator but never after CPU reset!!!
 cpu_mem_p:
 cpu_mem_l:	.RES 1
 cpu_mem_h:	.RES 1
 cpu_mem_p_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
+; General purpose pointer for other source files, bank is initialized though
+.EXPORTZP	umem_p1
+umem_p1:	.RES 2
+umem_p1_H16:	.RES 2
+; General purpose pointer for other source files, bank is initialized though
+.EXPORTZP	umem_p2
+umem_p2:	.RES 2
+umem_p2_H16:	.RES 2
 ; Only updated at exit, the CPU opcode (at cpu_pc) which caused the exit of i8080 mode
 .EXPORTZP	cpu_op
 cpu_op:		.RES 1
@@ -276,13 +284,13 @@ cpu_last:
 	;.ENDIF
 	TAX
 	LDA	szp_f_tab,X
-	INA			; set 8080 carry by default
-	SBC	#0		; set Carry for 8080, based on the "subop" opcode's carry, but we must "revese" it as 65xx notion is "borrow" for substract on carry
+	ADC	#0
+	EOR	#1
 	STA	cpu_f
 	; FIXME: H is not handled yet!!!!!!!!!
 .ENDMACRO
 .MACRO OPC_SUB_A_R	subop, value
-	SEC
+	SEC				; warning: we use SEC, because of the inverted notion of carry flag in case of SBC op on 65xx CPUs compared to 8080s!
 	SUB_SBC_CP_A_OPS  STA cpu_a,subop,value
 	JMP	next_inc1
 .ENDMACRO
@@ -290,12 +298,12 @@ cpu_last:
 	LDA	cpu_f
 	INA		; incrementing something will reverse bit0 for us :) :)
 	LSR	A	; now 65xx carry contains the inverse of the 8080 carry needed for the inversed notion of SBC for carry on 65xx CPUs
-	SUB_SBC_CP_A_OPS ,subop,value 	; first parameter is empty!!
+	SUB_SBC_CP_A_OPS  STA cpu_a,subop,value
 	JMP	next_inc1
 .ENDMACRO
 .MACRO OPC_CP_A_R	subop, value
-	SEC
-	SUB_SBC_CP_A_OPS ,subop,value	; first parameter is empty!!
+	SEC				; warning: we use SEC, because of the inverted notion of carry flag in case of SBC op on 65xx CPUs compared to 8080s!
+	SUB_SBC_CP_A_OPS ,subop,value	; first parameter is empty!! we don't store the result as it's "CP" opcode
 	JMP	next_inc1
 .ENDMACRO
 
@@ -733,7 +741,7 @@ opc_93:	OPC_SUB_A_R	SBC, cpu_e	; SUB A,E
 opc_94:	OPC_SUB_A_R	SBC, cpu_h	; SUB A,H
 opc_95:	OPC_SUB_A_R	SBC, cpu_l	; SUB A,L
 opc_96:	OPC_SUB_A_R	SBC32Z, cpu_hl	; SUB A,(HL)
-opc_97:	OPC_SUB_A_R	SBC, cpu_a	; SUB A,A
+opc_97:	OPC_SUB_A_R	SBC, cpu_a	; SUB A,A	TODO: optimize it
 opc_98:	OPC_SBC_A_R	SBC, cpu_b	; SBC A,B
 opc_99:	OPC_SBC_A_R	SBC, cpu_c	; SBC A,C
 opc_9A:	OPC_SBC_A_R	SBC, cpu_d	; SBC A,D
@@ -810,7 +818,7 @@ opc_CF:	OPC_RST		$08		; RST 08h
 opc_D0= opc_RET_NC			; RET NC
 opc_D1:	OPC_POP_RR	cpu_de		; POP DE
 opc_D2= opc_JP_NC			; JP NC,nn
-opc_D3= TODO				; OUT (n),A
+opc_D3= next_inc2			; OUT (n),A: we don't emulate this, simply skipped
 opc_D4= opc_CALL_NC			; CALL NZ,nn
 opc_D5:	OPC_PUSH_RR	cpu_de		; PUSH DE
 opc_D6:	INW		cpu_pc		; SUB A,byte
@@ -819,7 +827,10 @@ opc_D7:	OPC_RST		$10		; RST 10h
 opc_D8= opc_RET_C			; RET C
 opc_D9= opc_RET				; *NON-STANDARD* RET		[EXX on Z80]
 opc_DA= opc_JP_C			; JP C,nn
-opc_DB= TODO				; IN A,(n)
+opc_DB:					; IN A,(n)
+	LDA	#$FF	; just fake 0xFF for all port I/O
+	STA	cpu_a
+	JMP	next_inc2
 opc_DC= opc_CALL_C			; CALL C,nn
 opc_DD= opc_CALL			; *NON-STANDARD* CALL nn	[DD-prefix on Z80]
 opc_DE:	INW		cpu_pc		; SBC A,byte
@@ -871,7 +882,7 @@ opc_EE:	INW		cpu_pc		; XOR A,n
 	OPC_LOGICOP_GEN EOR32Z, cpu_pc, szp_f_tab
 opc_EF:	OPC_RST		$28		; RST 28h
 opc_F0= opc_RET_P			; RET P
-opc_F1:	OPC_POP_RR	cpu_af		; POP AF
+opc_F1:	OPC_POP_RR	cpu_af		; POP AF	FIXME: do not allow to set/reset unused bits!
 opc_F2= opc_JP_P			; JP P,nn
 opc_F3= next_inc1			; DI	!!INTERRUPTS ARE NOT EMULATED!!
 opc_F4= opc_CALL_P			; CALL P,nn
@@ -904,26 +915,45 @@ cpu_start:
 	JMP	next_no_inc
 
 
+.EXPORT cpu_start_with_ret
+cpu_start_with_ret:
+	LDZ	#0
+	JMP	opc_RET
+
+.EXPORT cpu_start_with_inc_pc
+cpu_start_with_inc_pc:
+	LDZ	#0
+	JMP	next_inc1
+
+
 .EXPORT cpu_reset
-cpu_reset:
+.PROC	cpu_reset
 	LDX	#cpu_last - cpu_first - 1
 	LDA	#0
-:	STA	cpu_first,X
+clear_zp:
+	STA	cpu_first,X
 	DEX
-	BPL	:-
-	; "1" as "H16"s: we use second 64K of "chipram" of M65 for 8080 memory, so colour RAM is there too btw.
-	; The most significant byte of linear address is zero already (see above the clear loop of ZP locs!)
-	LDA	#1
-	STA	cpu_bc_H16
-	STA	cpu_de_H16
-	STA	cpu_hl_H16
-	STA	cpu_pc_H16
-	STA	cpu_sp_H16
-	STA	cpu_mem_p_H16
+	BPL	clear_zp
+	; Set high bits of the M65 linear addressing pointers
+	LDX	#1
+	LDA	#M65_BANK_HI
+set_memp:
+	STA	cpu_bc_H16,X
+	STA	cpu_de_H16,X
+	STA	cpu_hl_H16,X
+	STA	cpu_pc_H16,X
+	STA	cpu_sp_H16,X
+	STA	cpu_mem_p_H16,X
+	STA	umem_p1_H16,X
+	STA	umem_p2_H16,X
+	LDA	#M65_BANK_LO
+	DEX
+	BPL	set_memp
 	; CPU flags on 8080 has an unused always '1' item
 	LDA	#2
 	STA	cpu_f
 	RTS
+.ENDPROC
 	
 ; Please see comments at cpu_leave! The same things.
 ; Just this is one jumped on, if an opcode emulation is not implemented.

@@ -1,4 +1,4 @@
-## System/file navigator for Mega-65
+## Software i8080 and CP/M emulator for Mega-65
 ##
 ## Copyright (C)2017 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 #
