@@ -28,16 +28,7 @@
 
 
 .INCLUDE "mega65.inc"
-
-
-.IMPORTZP umem_p1
-.IMPORTZP cpu_af
-.IMPORTZP cpu_bc
-.IMPORTZP cpu_de
-.IMPORTZP cpu_hl
-.IMPORTZP cpu_pc
-.IMPORTZP cpu_sp
-.IMPORTZP cpu_op
+.INCLUDE "cpu.inc"
 
 
 

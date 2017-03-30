@@ -30,19 +30,7 @@
 .INCLUDE "mega65.inc"
 .INCLUDE "emu.inc"
 .INCLUDE "console.inc"
-
-
-.IMPORT cpu_reset
-.IMPORT cpu_start
-.IMPORT exit_system
-.IMPORTZP cpu_af
-.IMPORTZP cpu_bc
-.IMPORTZP cpu_de
-.IMPORTZP cpu_hl
-.IMPORTZP cpu_pc
-.IMPORTZP cpu_sp
-.IMPORTZP cpu_op
-.IMPORTZp umem_p1
+.INCLUDE "cpu.inc"
 
 
 ; Needs CPU reset for umem_p1 initialized for bank
@@ -119,56 +107,125 @@ lowpage_bytes = * - lowpage
 i8080_code:
 	;.INCBIN "8080/cpmver.com"
 	.INCBIN "8080/cpmver-real.com"
+	;.INCBIN "8080/wow.com"
 	;.INCBIN "8080/mbasic-real.com"
 i8080_code_pages = (* - i8080_code) + 1
 .ENDPROC
 
 
+; BDOS function 9 (C_WRITESTR) - Output string
+; Entered with C=9, DE=address of string. End of string marker is '$'
+.PROC	bdos_9
+	LDZ	#0
+loop:
+	LDA32Z	cpu_de
+	INW	cpu_de
+	CMP	#'$'
+	LBEQ	cpu_start_with_ret
+	JSR	write_char
+	JMP	loop
+.ENDPROC
 
 
-; This test version runs 8080 code wich uses HALT opcode to return from emulation
-; The odd theory now: if high byte of 8080 SP is set to $FF then it means exit
-; program, otherwise "A" register should be printed on the screen. yeah, it's far
-; from anything to be a normal behaviour but now this is the fastest way around
-; to test basic 8080 emulation stuffs before CP/M specific projects ...
 
+; BDOS function 12 (S_BDOSVER) - Return version number
+; Entered with C=0Ch. Returns B=H=system type, A=L=version number.
+.PROC	bdos_12
+	LDA	#0
+	STA	cpu_bc+1
+	STA	cpu_hl+1
+	LDA	#$22
+	STA	cpu_af+1
+	STA	cpu_hl
+	JMP	cpu_start_with_ret
+.ENDPROC
+
+
+bdos_call_table:
+	.WORD	bdos_unknown		; Call $0
+	.WORD	bdos_unknown		; Call $1
+	.WORD	bdos_unknown		; Call $2
+	.WORD	bdos_unknown		; Call $3
+	.WORD	bdos_unknown		; Call $4
+	.WORD	bdos_unknown		; Call $5
+	.WORD	bdos_unknown		; Call $6
+	.WORD	bdos_unknown		; Call $7
+	.WORD	bdos_unknown		; Call $8
+	.WORD	bdos_9			; Call $9: BDOS function 9 (C_WRITESTR) - Output string
+	.WORD	bdos_unknown		; Call $A
+	.WORD	bdos_unknown		; Call $B
+	.WORD	bdos_12			; Call $C: BDOS function 12 (S_BDOSVER) - Return version number
+bdos_call_table_size = (* - bdos_call_table) / 2
+
+
+
+.PROC	bdos_unknown
+	WRISTR	{13,10,"*** UNKNOWN BDOS call",13,10}
+	JMP	halt
+.ENDPROC
+
+.PROC	bdos_call
+	LDA	cpu_bc		; C register: BDOS call number
+	CMP	#bdos_call_table_size
+	BCS	bdos_unknown_big
+	ASL	A
+	TAX
+	JMP	(bdos_call_table,X)
+bdos_unknown_big:
+	WRISTR	{13,10,"*** UNKNOWN BDOS call (too high)",13,10}
+	JMP	halt
+.ENDPROC
+
+
+
+.PROC	bios_call
+	WRISTR	{13,10,"*** BIOS is not emulated yet",13,10}
+	JMP	halt
+.ENDPROC
+
+
+; This is the "main function" jumped by the loader
 .EXPORT	app_main
 .PROC	app_main
 	JSR	init_m65_ascii_charset
 	JSR	clear_screen	; the fist call of this initiailizes console out functions
-	WRISTR	{"i8080 emulator and CP/M CBIOS for Mega-65 (C)2017 LGB",13,10}
+	WRISTR	{"i8080 emulator and (re-implemented) CP/M for Mega-65 (C)2017 LGB",13,10}
 	JSR	cpu_reset
-	JSR	install_software
+	JSR	install_software	; initializes i8080 CP/M memory, and "uploads" the software there we want to run
 	LDA	#1
 	STA	cpu_pc+1	; reset address was 0, now with high byte modified to 1, it's 0x100, the start address of CP/M programs.
 	WRISTR	{"Entering into i8080 mode",13,10,13,10}
-run:
-	JSR	cpu_start
-	LBCS	error_unimp	; check the reason of exit in the emulator, if Carry is set, then unimplemented opcode found!
-	; Now next task is check where it happened
+	JMP	cpu_start
+.ENDPROC
+
+
+; i8080 emulator will jump here on "cpu_leave" event
+.EXPORT	return_cpu_leave
+.PROC	return_cpu_leave
 	LDA	cpu_pc+1
 	CMP	#SYSPAGE
 	BNE	error_nosyspage
 	LDA	cpu_pc
 	AND	#$3F
-	BEQ	cpm_bdos_entry
-	JMP	error_no_bios
-error_no_bios:
-	WRISTR	{13,10,"*** BIOS is not emulated yet",13,10}
-	JMP	halt
-cpm_bdos_entry = error_no_bdos
-error_no_bdos:
-	WRISTR	{13,10,"*** BDOS is not emulated yet",13,10}
-	JMP	halt
+	LBNE	bios_call
+	LDA	cpu_bc		; load C register (BDOS call number)
+	JMP	bdos_call
 error_nosyspage:
 	WRISTR	{13,10,"*** Emulation trap not on the system page",13,10}
 	JMP	halt
-error_unimp:
+.ENDPROC
+
+; i8080 emulator will jump here on "cpu_unimplemented" event
+.EXPORT	return_cpu_unimplemented
+.PROC	return_cpu_unimplemented
 	WRISTR	{13,10,"*** Unimplemented i8080 opcode",13,10}
-halt:
+	JMP	halt
+.ENDPROC
+
+.PROC	halt
 	JSR	reg_dump
 	WRISTR  {13,10,"HALTED.",13,10}
-halted_loop:
+halted:
 	INC	$fcf
-	JMP	halted_loop
+	JMP	halted
 .ENDPROC

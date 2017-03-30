@@ -59,8 +59,7 @@ $(PRG): $(OBJECTS) $(LD65_CFG) $(ALL_DEPENDS)
 
 $(DISK_IMAGE): $(PRG) $(ALL_DEPENDS)
 	$(RM) -f $@
-	echo format lgb-test,00 d81 $@ | $(C1541)
-	echo write $(PRG) $(PRG_ON_DISK) | $(C1541) $@
+	echo "format lgb-test,00 d81 $@\nwrite $(PRG) $(PRG_ON_DISK)" | $(C1541)
 
 test: $(DISK_IMAGE) $(ALL_DEPENDS) $(KICKUP) $(SDIMG)
 	$(MAKE) $(XEMU_SNAPSHOT)

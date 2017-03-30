@@ -47,36 +47,36 @@
 ; Must be before the first CPU specific ZP label
 cpu_first:
 ; Register pair AF (PSW), not used for indexing, no need for "H16":
-.EXPORTZP	cpu_af
+.EXPORTZP	cpu_af, cpu_a, cpu_f
 cpu_af:
 cpu_f:		.RES 1
 cpu_a:		.RES 1
 ; Register pair BC
-.EXPORTZP	cpu_bc
+.EXPORTZP	cpu_bc, cpu_b, cpu_c
 cpu_bc:
 cpu_c:		.RES 1
 cpu_b:		.RES 1
 cpu_bc_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
 ; Register pair DE
-.EXPORTZP	cpu_de
+.EXPORTZP	cpu_de, cpu_d, cpu_e
 cpu_de:
 cpu_e:		.RES 1
 cpu_d:		.RES 1
 cpu_de_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
 ; Register pair HL
-.EXPORTZP	cpu_hl
+.EXPORTZP	cpu_hl, cpu_h, cpu_l
 cpu_hl:
 cpu_l:		.RES 1
 cpu_h:		.RES 1
 cpu_hl_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
 ; The program counter
-.EXPORTZP	cpu_pc
+.EXPORTZP	cpu_pc, cpu_pch, cpu_pcl
 cpu_pc:
 cpu_pcl:	.RES 1
 cpu_pch:	.RES 1
 cpu_pc_H16:	.RES 2	; high 16 bit address for 8080 memory base [32 bit linear]
 ; Stack pointer
-.EXPORTZP	cpu_sp
+.EXPORTZP	cpu_sp, cpu_sph, cpu_spl
 cpu_sp:
 cpu_spl:	.RES 1
 cpu_sph:	.RES 1
@@ -906,8 +906,8 @@ opc_FE:	INW	cpu_pc			; CP n
 opc_FF:	OPC_RST		$38		; RST 38h
 
 
-; Call this to start to execute 8080 code. About 8080 memory position see comments at cpu_reset.
-; CPU emulator returns, in case of HALT opcode or any not yet emulated opcode.
+; Jump this to start to execute 8080 code. About 8080 memory position see comments at cpu_reset.
+; CPU emulator returns (via JUMP again see below), in case of HALT opcode or any not yet emulated opcode.
 ; About these, please read comments at cpu_leave and cpu_unimplemented.
 .EXPORT	cpu_start
 cpu_start:
@@ -962,8 +962,8 @@ cpu_unimplemented:
 	TXA
 	ROR	A
 	STA	cpu_op
-	SEC		; set carry to signal unimplemented status
-	RTS
+	.IMPORT	return_cpu_unimplemented
+	JMP	return_cpu_unimplemented
 	
 ; This is used if an opcode "dispatches" the control. Like HALT.
 ; Note: if you want to continue, you need to increment cpu_pc by your own before calling cpu_start again!
@@ -972,5 +972,5 @@ cpu_leave:
 	TXA			; (see next op), though A should contain the same as X, just to be sure anyway ...
 	ROR	A		; Restore original opcode to report for the caller, A still holds the ASL'ed opcode, and carry should be the old 7th bit of the opcode
 	STA	cpu_op
-	CLC			; the opposite situation done in cpu_unimplemented, please see there
-	RTS			; return. caller gets control back here (cpu_start was called) A contains the opcode caused exit, cpu_pc is the PC of opcode
+	.IMPORT	return_cpu_leave
+	JMP	return_cpu_leave

@@ -1,4 +1,4 @@
-# 8080 (software) emulator for Mega-65 for running original CP/M applications
+# 8080 (software) and CP/M emulator for the Mega-65
 
 This tool tries to implement a CP/M emulator for the Mega-65 with software
 emulation of the 8080 CPU. Emulating Z80 would be nicer, but also it's a bigger
