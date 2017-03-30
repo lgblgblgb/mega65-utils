@@ -131,6 +131,14 @@ that:
 .EXPORT	write_hex_byte
 .EXPORT	write_hex_nib
 .EXPORT	write_char
+.EXPORT	write_crlf
+
+write_crlf:
+	LDA	#13
+	JSR	write_char
+	LDA	#10
+	JMP	write_char
+
 write_hex_byte_at_zp:
 	PHX
 	TAX

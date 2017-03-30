@@ -32,11 +32,22 @@
 .INCLUDE "console.inc"
 .INCLUDE "cpu.inc"
 
+.SEGMENT "PAYLOAD"
+	; Experimental way to include a given CP/M program, since we don't have the ability yet, to load something ...
+	.IMPORT	__PAYLOAD_LOAD__
+	.IMPORT	__PAYLOAD_SIZE__
+	;.INCBIN "8080/cpmver.com"
+	;.INCBIN "8080/cpmver-real.com"
+	;.INCBIN "8080/wow.com"
+	.INCBIN "8080/mbasic-real.com"
+
+.CODE
 
 ; Needs CPU reset for umem_p1 initialized for bank
 .EXPORT	install_software
 .PROC	install_software
-	; Clear whole RAM, up to (but not including) SYSPAGE
+	; Clear whole RAM, up to (but not including) BDOSPAGE
+	WRISTR	"Init checkpoints: 0"
 	LDA	#0
 	TAZ
 	TAX
@@ -47,11 +58,20 @@ clear2:
 	INZ
 	BNE	clear2
 	INX
-	CPX	#SYSPAGE
+	CPX	#BDOSPAGE
 	BNE	clear1
-	; Prepare upper system page
+	; Prepare "BDOS page" (fully HALTs)
+	WRISTR	"1"
 	STX	umem_p1+1
-	LDZ	#0
+	LDA	#HALT_OPC_8080
+fillsyspage0:
+	STA32Z	umem_p1
+	INZ
+	BNE	fillsyspage0
+	; Prepare "BIOS page"
+	WRISTR	"2"
+	INX
+	STX	umem_p1+1
 	LDY	#$C0
 fillsyspage1:
 	LDA	#JP_OPC_8080
@@ -60,7 +80,7 @@ fillsyspage1:
 	TYA
 	STA32Z	umem_p1
 	INZ
-	LDA	#SYSPAGE
+	LDA	#BIOSPAGE
 	STA32Z	umem_p1
 	INZ
 	INY
@@ -71,6 +91,7 @@ fillsyspage2:
 	INZ
 	BNE	fillsyspage2
 	; Prepare lower system page
+	WRISTR	"3"
 	LDA	#0
 	STA	umem_p1+1
 	TAX
@@ -83,13 +104,14 @@ fillzeropage:
 	CPX	#lowpage_bytes
 	BNE	fillzeropage
 	; Copy program to be executed
+	WRISTR	"4"
 	LDX	#1
 	STX	umem_p1+1
 	DEX
 	LDZ	#0
-	LDY	#i8080_code_pages
+	LDY	#.HIBYTE(__PAYLOAD_SIZE__) + 1
 uploadloop:
-	LDA	i8080_code,X
+	LDA	__PAYLOAD_LOAD__,X
 	STA32Z	umem_p1
 	INZ
 	INX
@@ -98,18 +120,13 @@ uploadloop:
 	INC	uploadloop+2
 	DEY
 	BNE	uploadloop
+	JSR	write_crlf
 	RTS
 lowpage:
-	.BYTE	JP_OPC_8080, 2 * 3, SYSPAGE	; CP/M BIOS WARM boot entry point
+	.BYTE	JP_OPC_8080, 3, BIOSPAGE	; CP/M BIOS WARM boot entry point
 	.BYTE	0, 0	; I/O byte and disk byte
-	.BYTE	JP_OPC_8080, 0 * 3, SYSPAGE	; CP/M BDOS entry point
+	.BYTE	JP_OPC_8080, 0, BDOSPAGE	; CP/M BDOS entry point
 lowpage_bytes = * - lowpage
-i8080_code:
-	;.INCBIN "8080/cpmver.com"
-	.INCBIN "8080/cpmver-real.com"
-	;.INCBIN "8080/wow.com"
-	;.INCBIN "8080/mbasic-real.com"
-i8080_code_pages = (* - i8080_code) + 1
 .ENDPROC
 
 
@@ -141,6 +158,14 @@ loop:
 .ENDPROC
 
 
+; BIOS CONOUT (white character in register C)
+.PROC	bios_4
+	LDA	cpu_c
+	JSR	write_char
+	JMP	cpu_start_with_ret
+.ENDPROC
+
+
 bdos_call_table:
 	.WORD	bdos_unknown		; Call $0
 	.WORD	bdos_unknown		; Call $1
@@ -158,14 +183,31 @@ bdos_call_table:
 bdos_call_table_size = (* - bdos_call_table) / 2
 
 
+bios_call_table:
+	.WORD	bios_unknown		; 0: BOOT
+	.WORD	bios_unknown		; 1: WBOOT
+	.WORD	bios_unknown		; 2:
+	.WORD	bios_unknown		; 3:
+	.WORD	bios_4			; 4: CONOUT (white character in register C)
+bios_call_table_size = (* - bios_call_table) / 2
+
+
 
 .PROC	bdos_unknown
 	WRISTR	{13,10,"*** UNKNOWN BDOS call",13,10}
 	JMP	halt
 .ENDPROC
 
+
+.PROC	bios_unknown
+	WRISTR	{13,10,"*** UNKNOWN BIOS call: $"}
+	JMP	bios_call_show_and_halt
+.ENDPROC
+
+
+
 .PROC	bdos_call
-	LDA	cpu_bc		; C register: BDOS call number
+	LDA	cpu_c		; C register: BDOS call number
 	CMP	#bdos_call_table_size
 	BCS	bdos_unknown_big
 	ASL	A
@@ -179,21 +221,34 @@ bdos_unknown_big:
 
 
 .PROC	bios_call
-	WRISTR	{13,10,"*** BIOS is not emulated yet",13,10}
+	LDA	cpu_pcl
+	AND	#$3F
+	CMP	#bios_call_table_size
+	BCS	bios_unknown_big
+	ASL	A
+	TAX
+	JMP	(bios_call_table,X)
+	WRISTR	{13,10,"*** UNKNOWN BIOS call (too high): $"}
+bios_unknown_big:
+	LDA	cpu_pcl
+	AND	#$3F
+	JSR	write_hex_byte
+	JSR	write_crlf
 	JMP	halt
 .ENDPROC
+bios_call_show_and_halt = bios_call::bios_unknown_big
 
 
 ; This is the "main function" jumped by the loader
 .EXPORT	app_main
 .PROC	app_main
 	JSR	init_m65_ascii_charset
-	JSR	clear_screen	; the fist call of this initiailizes console out functions
+	JSR	clear_screen		; the fist call of this initiailizes console out functions
 	WRISTR	{"i8080 emulator and (re-implemented) CP/M for Mega-65 (C)2017 LGB",13,10}
 	JSR	cpu_reset
 	JSR	install_software	; initializes i8080 CP/M memory, and "uploads" the software there we want to run
 	LDA	#1
-	STA	cpu_pc+1	; reset address was 0, now with high byte modified to 1, it's 0x100, the start address of CP/M programs.
+	STA	cpu_pch			; reset address was 0, now with high byte modified to 1, it's 0x100, the start address of CP/M programs.
 	WRISTR	{"Entering into i8080 mode",13,10,13,10}
 	JMP	cpu_start
 .ENDPROC
@@ -202,16 +257,12 @@ bdos_unknown_big:
 ; i8080 emulator will jump here on "cpu_leave" event
 .EXPORT	return_cpu_leave
 .PROC	return_cpu_leave
-	LDA	cpu_pc+1
-	CMP	#SYSPAGE
-	BNE	error_nosyspage
-	LDA	cpu_pc
-	AND	#$3F
-	LBNE	bios_call
-	LDA	cpu_bc		; load C register (BDOS call number)
-	JMP	bdos_call
-error_nosyspage:
-	WRISTR	{13,10,"*** Emulation trap not on the system page",13,10}
+	LDA	cpu_pch
+	CMP	#BIOSPAGE
+	LBEQ	bios_call
+	CMP	#BDOSPAGE
+	LBEQ	bdos_call
+	WRISTR	{13,10,"*** Emulation trap not on the BIOS or BDOS pages",13,10}
 	JMP	halt
 .ENDPROC
 

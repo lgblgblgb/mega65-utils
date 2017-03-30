@@ -1,4 +1,4 @@
-; System/file navigator for Mega-65: the loader/"basic stub"
+; Wannabe generic C65-mode loader for Mega-65: the loader/"basic stub"
 ;
 ; This file (with the Makefile too) also functions as an intended example
 ; for M65 development, using C65 mode loader, and Xemu to test (see Makefile)

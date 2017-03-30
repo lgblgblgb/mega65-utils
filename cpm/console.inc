@@ -37,6 +37,7 @@
 .IMPORT		write_hex_byte
 .IMPORT		write_hex_nib
 .IMPORT		write_char
+.IMPORT		write_crlf
 .IMPORT		init_m65_ascii_charset
 .IMPORT		reg_dump
 

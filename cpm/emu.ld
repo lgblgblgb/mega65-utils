@@ -12,4 +12,5 @@ SEGMENTS {
 	LOADADDR:	load = LOADADDR;
 	BASICSTUB:	load = RAM, define = yes;
 	CODE:		load = RAM;
+	PAYLOAD:	load = RAM, define = yes;
 }

@@ -52,7 +52,10 @@ cpu_tables.inc: cpu_gen_tables.py $(ALL_DEPENDS)
 %.o: %.asm $(ALL_DEPENDS) $(INCLUDES)
 	$(CA65) $(CA65_OPTS) -o $@ $<
 
-main.o: 8080/*.com
+8080/mbasic-real.com:
+	$(WGET) -O $@ http://github.lgb.hu/xemu/files/mbasic-real.com
+
+main.o: 8080/*.com 8080/mbasic-real.com
 
 $(PRG): $(OBJECTS) $(LD65_CFG) $(ALL_DEPENDS)
 	$(LD65) $(LD65_OPTS) -o $@ $(OBJECTS)
@@ -74,10 +77,10 @@ $(XEMU_SNAPSHOT):
 	@echo "**** NO Xemu snapshot ($(XEMU_SNAPSHOT)) for quick testing method."
 	@echo "**** We will create one for you, please read the following carefully:"
 	@echo "Please let Xemu/M65 run, and answer for external disk image"
-	@echo 'After boot, type this, WITHOUT pressing enter/return: RUN"NAVIGATOR"'
+	@echo 'After boot, type this, WITHOUT pressing enter/return: RUN"EMU"'
 	@echo "Then, just press F9 to exit (and no enter/return key, again!!)."
 	@echo "This will write a snapshot file, so next time you will need"
-	@echo "only to hit ENTER to test the new navigator version without"
+	@echo "only to hit ENTER to test the new compiled version without"
 	@echo "waiting for M65 to boot, or whatever. After the snapshot creation step,"
 	@echo 'you will only need to say "make test" to build and test with Xemu.'
 	@echo "**** Please hit ENTER now to proceed the described task"
