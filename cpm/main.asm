@@ -34,6 +34,7 @@
 
 .SEGMENT "PAYLOAD"
 	; Experimental way to include a given CP/M program, since we don't have the ability yet, to load something ...
+	; Do not put anything other into this segment only the binary you want to execute!
 	.IMPORT	__PAYLOAD_LOAD__
 	.IMPORT	__PAYLOAD_SIZE__
 	;.INCBIN "8080/cpmver.com"
@@ -157,8 +158,21 @@ loop:
 	JMP	cpu_start_with_ret
 .ENDPROC
 
+; BIOS CONST  (Returns its status in A; 0 if no character is ready, 0FFh if one is.)
+.PROC	bios_2
+	LDA	#$FF
+	STA	cpu_a
+	JMP	cpu_start_with_ret
+.ENDPROC
 
-; BIOS CONOUT (white character in register C)
+; BIOS CONIN  (Wait until the keyboard is ready to provide a character, and return it in A.)
+.PROC	bios_3
+	JSR	kbdin_wait
+	STA	cpu_a
+	JMP	cpu_start_with_ret
+.ENDPROC
+
+; BIOS CONOUT (write character in register C)
 .PROC	bios_4
 	LDA	cpu_c
 	JSR	write_char
@@ -186,9 +200,9 @@ bdos_call_table_size = (* - bdos_call_table) / 2
 bios_call_table:
 	.WORD	bios_unknown		; 0: BOOT
 	.WORD	bios_unknown		; 1: WBOOT
-	.WORD	bios_unknown		; 2:
-	.WORD	bios_unknown		; 3:
-	.WORD	bios_4			; 4: CONOUT (white character in register C)
+	.WORD	bios_2			; 2: CONST  (Returns its status in A; 0 if no character is ready, 0FFh if one is.)
+	.WORD	bios_3			; 3: CONIN  (Wait until the keyboard is ready to provide a character, and return it in A.)
+	.WORD	bios_4			; 4: CONOUT (write character in register C)
 bios_call_table_size = (* - bios_call_table) / 2
 
 
@@ -242,7 +256,7 @@ bios_call_show_and_halt = bios_call::bios_unknown_big
 ; This is the "main function" jumped by the loader
 .EXPORT	app_main
 .PROC	app_main
-	JSR	init_m65_ascii_charset
+	JSR	init_console
 	JSR	clear_screen		; the fist call of this initiailizes console out functions
 	WRISTR	{"i8080 emulator and (re-implemented) CP/M for Mega-65 (C)2017 LGB",13,10}
 	JSR	cpu_reset
@@ -250,6 +264,9 @@ bios_call_show_and_halt = bios_call::bios_unknown_big
 	LDA	#1
 	STA	cpu_pch			; reset address was 0, now with high byte modified to 1, it's 0x100, the start address of CP/M programs.
 	WRISTR	{"Entering into i8080 mode",13,10,13,10}
+	CLI				; hmmm! enable interrupts oh-oh!
+	.IMPORT	kbd_test
+	;JSR	kbd_test
 	JMP	cpu_start
 .ENDPROC
 

@@ -27,7 +27,6 @@
 ; ----------------------------------------------------------------------------
 
 
-
 .IMPORTZP	cursor_x
 .IMPORTZP	cursor_y
 .IMPORT		clear_screen
@@ -38,8 +37,9 @@
 .IMPORT		write_hex_nib
 .IMPORT		write_char
 .IMPORT		write_crlf
-.IMPORT		init_m65_ascii_charset
+.IMPORT		init_console
 .IMPORT		reg_dump
+.IMPORT		kbdin_wait
 
 .MACRO	WRISTR	str
 	JSR	write_inline_string

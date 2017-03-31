@@ -30,6 +30,10 @@
 .INCLUDE "mega65.inc"
 .INCLUDE "cpu.inc"
 
+TEXT_COLOUR	= 13
+BG_COLOUR	= 0
+BORDER_COLOUR	= 11
+CURSOR_COLOUR	= 2
 
 
 .ZEROPAGE
@@ -37,6 +41,9 @@
 string_p:	.RES 2
 cursor_x:	.RES 1
 cursor_y:	.RES 1
+cursor_blink_counter:	.RES 1
+kbd_modkeys:	.RES 1
+kbd_pressed:	.RES 1
 
 
 .CODE
@@ -51,6 +58,8 @@ cursor_y:	.RES 1
 ; Currently we don't handle colours etc anything, but full colour RAM anyway with a consistent colour
 .EXPORT	clear_screen
 .PROC	clear_screen
+	PHP
+	SEI
 	LDA	#1
 	TSB	$D030		; switch on full 2K colour RAM
 	LDA	#$08
@@ -62,7 +71,7 @@ cursor_y:	.RES 1
 	STX	cursor_x
 	STX	cursor_y
 	LDY	#8
-	LDZ	#1
+	LDZ	#TEXT_COLOUR
 loop:
 	vhi = * + 2
 	STA	$0800,X
@@ -76,6 +85,9 @@ loop:
 	BNE	loop
 	LDA	#1
 	TRB	$D030		; OK, release colour RAM, so CIA1/CIA2 can be seen again
+	LDA	#15
+	STA	4088		; sprite shape
+	PLP
 	RTS
 .ENDPROC
 
@@ -159,11 +171,26 @@ write_hex_nib:
 	BCC	write_char
 	ADC	#6
 .PROC write_char
+	PHX
+	CMP	#32
+	BCS	normal_char
 	CMP	#13
 	BEQ	cr_char
-	PHX
 	CMP	#10
 	BEQ	lf_char
+	TAX
+	LDA	#'^'
+	JSR	write_char
+	TXA
+	JSR	write_hex_byte
+	PLX
+	RTS
+cr_char:
+	LDA	#0
+	STA	cursor_x
+	PLX
+	RTS
+normal_char:
 	PHA
 	; load address
 	LDX	cursor_y
@@ -226,10 +253,6 @@ scroll1:
 	; end of scrolling of screen
 	PLX
 	RTS
-cr_char:
-	LDA	#0
-	STA	cursor_x
-	RTS
 screen_line_tab_lo:
 	.BYTE	$0,$50,$a0,$f0,$40,$90,$e0,$30,$80,$d0,$20,$70,$c0,$10,$60,$b0,$0,$50,$a0,$f0,$40,$90,$e0,$30,$80
 screen_line_tab_hi:
@@ -245,8 +268,8 @@ screen_line_tab_hi:
 .ENDMACRO
 
 
-.EXPORT	init_m65_ascii_charset
-.PROC init_m65_ascii_charset
+.EXPORT	init_console
+.PROC init_console
 	; Turn C64 charset at $D000 for starting point of modification
 	LDA	#1
 	STA	1
@@ -288,13 +311,50 @@ cp0:
 	; All RAM, but I/O?
 	LDA	#5
 	STA	1
+	; Set interrupt handler
+	LDA	#<irq_handler
+	STA	$FFFE
+	LDA	#>irq_handler
+	STA	$FFFF
+	LDA	#1
+	STA	$D01A	; enable raster interrupt
+	; Sprite
+	LDX	#0
+sprite_shaper1:
+	LDA	#$F0
+	STA	$3C0,X
+	INX
+	LDA	#0
+	STA	$3C0,X
+	INX
+	STA	$3C0,X
+	INX
+	CPX	#24
+	BNE	sprite_shaper1
+sprite_shaper2:
+	STA	$3C0,X
+	INX
+	CPX	#63
+	BNE	sprite_shaper2
+
+
+	LDA	#1
+	STA	$D015		; sprite enable
+	LDA	#100
+	STA	$D001		; Y-coord
+	STA	$D000		; X-coord
+	LDA	#CURSOR_COLOUR
+	STA	$D027		; sprite colour
+	; 
+	LDA	#BORDER_COLOUR
+	STA	$D020
+	LDA	#BG_COLOUR
+	STA	$D021
 	RTS
 .ENDPROC
 
 
-
-
-
+; TODO: also dump the word on the top of the stack!
 .EXPORT	reg_dump
 .PROC	reg_dump
 	WRISTR	"OP="
@@ -318,8 +378,178 @@ cp0:
 	WRISTR	" HL="
 	LDA	#cpu_hl
 	JSR	write_hex_word_at_zp
-	LDA	#13
-	JSR	write_char
-	LDA	#10
-	JMP	write_char
+	JMP	write_crlf
 .ENDPROC
+
+
+; Keyboard scan codes to ASCII table.
+; Note: some keys are handled as control keys with de-facto standard value, eg RETURN = 13
+; however some of them like SHIFT are *NOT*.
+scan2ascii:
+	.BYTE	8,13,0,0,0,0,0,0
+	.BYTE	"3wa4zse",0	; 0 at the end = shift, it's not handled here simply
+	.BYTE	"5rd6cftx"
+	.BYTE	"7yg8bhuv"
+	.BYTE	"9ij0mkon"
+	.BYTE	"+pl-.:@,"
+	.BYTE	"#*;",0,0,"=^/"
+	.BYTE	"1",0,0,"2 ",0,"q",0
+
+
+
+.PROC	irq_handler
+	PHA
+	PHX
+	PHY
+	PHZ
+	; Scan the keyboard, use key buffer to store result, etc ...
+	; TODO: Keyboard scanning does not need to be done maybe at every VIC frame though ...
+	LDX	#0
+	STX	kbd_modkeys
+	STX	kbd_pressed
+	STA	$DC00
+	LDA	$DC01
+	INA
+	BEQ	not_any
+	LDA	#$FE		; start the outer loop, X=0 already
+scan1:
+	STA	$DC00
+	TAY
+	LDA	$DC01
+	CMP	#$FF
+	BEQ	no_key_here
+	LDZ	#8
+scan2:
+	LSR	A
+	BCS	not_this_key
+
+
+	PHA
+	LDA	scan2ascii,X
+	STA	$801
+	PLA
+
+
+;	CPZ	#15
+;	BEQ	key_is_shift
+;	CPZ	#52
+;	BEQ	key_is_shift
+;	CPZ	#58
+;	BEQ	not_this_key	; this time, we don't use CTRL yet
+;	CPZ	#61
+;	BEQ	not_this_key	; this time, we don't use C= yet
+;	STZ	kbd_pressed
+;	JMP	not_this_key
+;key_is_shift:
+;	SMB0	kbd_modkeys
+
+
+
+
+
+
+not_this_key:
+	INX
+	DEZ
+	BNE	scan2
+	BEQ	was_key_here
+no_key_here:
+	TXA
+	CLC
+	ADC	#8
+	TAX
+was_key_here:
+	TYA
+	SEC		; this will be the new bit0 (1)
+	ROL	A
+	BCS	scan1
+not_any:
+	; Ok, diagnostize the result, we have kbd_modkeys for key modifiers, and kbd_pressed for the pressed non-modifier key
+
+no_scan:
+	; TODO: simple audio events like "bell" (ascii code 7)?
+	; Cursor blink stuff
+	LDA	cursor_blink_counter
+	INA
+	STA	cursor_blink_counter
+	LSR	A
+	LSR	A
+	LSR	A
+	AND	#1
+	STA	$D015	; enable
+	; Update cursor position (we use a sprite as a cursor, updated in IRQ handler always)
+	LDA	cursor_x
+	TAX
+	ASL	A
+	ASL	A
+	CLC
+	ADC	#24
+	STA	$D000	; sprite-0 X coordinate
+	TXA
+	CMP	#51
+	LDA	#0
+	ADC	#0
+	STA	$D010	; 8th bit stuff
+	LDA	cursor_y
+	ASL	A
+	ASL	A
+	ASL	A
+	CLC
+	ADC	#50
+	STA	$D001	; cursor Y coordinate!
+	INC	$FCE	; "heartbeat"
+	PLZ
+	PLY
+	PLX
+	PLA
+	ASL	$D019	; acknowledge VIC interrupt (note: it wouldn't work on a real C65 as RMW opcodes are different but it does work on M65 as on C64 too!)
+	RTI
+.ENDPROC
+
+
+.PROC	wait_for_key
+	LDA	#$FE
+	STA	$DC00
+	LDA	#$FF
+wait:
+	CMP	$DC01
+	;INC	$D021
+	BEQ	wait
+	RTS
+.ENDPROC
+
+
+test_string:
+	.BYTE	"10 for a=1 to 10",13,"20 print a",13,"30 next a",13,"list",13,"run",0
+test_string_pos:
+	.BYTE 0
+
+
+.EXPORT kbdin_wait
+.PROC	kbdin_wait
+;	JSR	wait_for_key
+;	LDA	#'A'
+	LDX	test_string_pos
+	LDA	test_string,X
+wow:
+	BEQ	wow
+	INX
+	STX	test_string_pos
+	RTS
+.ENDPROC
+
+
+
+.EXPORT kbd_test
+.PROC	kbd_test
+	LDA	kbd_pressed
+	BEQ	kbd_test
+	CMP	displayed
+	BEQ	kbd_test
+	STA	displayed
+	JSR	write_hex_byte
+	JMP	kbd_test
+
+displayed: .BYTE 0
+.ENDPROC
+

@@ -52,3 +52,16 @@
 	NOP
 	SBC	(zploc),Z
 .ENDMACRO
+
+.MACRO __DMA_COPY_OP__		sourcebank, source, targetbank, target, length, upward, chained
+.ENDMACRO
+.MACRO __DMA_FILL_OP__		targetbank, target, filler, length, upward, chained
+.ENDMACRO
+.MACRO DMA_COPY_OP_CHAINED	sourcebank, source, targetbank, target, length, upward
+.ENDMACRO
+.MACRO DMA_COPY_OP_LAST		sourcebank, source, targetbank, target, length, upward
+.ENDMACRO
+.MACRO DMA_FILL_OP_CHAINED	targetbank, target, filler, length, upward
+.ENDMACRO
+.MACRO DMA_FILL_OP_LAST		targetbank, target, filler, length, upward
+.ENDMACRO

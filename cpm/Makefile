@@ -102,7 +102,7 @@ $(SDIMG):
 
 distclean:
 	$(MAKE) clean
-	$(RM) -f $(XEMU_SNAPSHOT) $(KICKUP) $(SDIMG)
+	$(RM) -f $(XEMU_SNAPSHOT) $(KICKUP) $(SDIMG) 8080/mbasic-real.com
 
 .PHONY: all clean distclean test test-debug
 
