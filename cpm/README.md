@@ -1,4 +1,4 @@
-# 8080 (software) and CP/M emulator for the Mega-65
+# 8080 (software) emulator and CP/M implementation for the Mega-65
 
 This tool tries to implement a CP/M emulator for the Mega-65 with software
 emulation of the 8080 CPU. Emulating Z80 would be nicer, but also it's a bigger
@@ -40,7 +40,7 @@ in your search path, it will fetch things for you, if needed with wget).
 
 ## Current problems and limitations
 
-* i8080 emulation is farily complete as the emulated opcoded, though there
+* i8080 emulation is farily complete as the emulated opcodes, though there
   can be huge amount of bugs, not so much tested. Also now only "DAA"
   is not emulated, since the half-carry flag is not emulated at all, it's
   really a pain in the ass to do :(
@@ -57,9 +57,8 @@ in your search path, it will fetch things for you, if needed with wget).
   it has a serious problem: after "exiting", screen will be messed up, because
   my i8080 emulator installs ASCII-compatible character generator layout for
   more comfortable usage of I/O routines.
-* Currently not so much BDOS and BIOS calls work (currently *ZERO* as when
-  I write this ...), what would be the major intent here. However i8080 CPU
-  emulation needed some time to do first ...
+* Currently not so much BDOS and BIOS calls work, what would be the major
+  intent here, besides the 8080 emulation.
 * "Console" emulation if fairly incomplete, screen scrolling should be done
   with DMA, control codes should be implemented, there is no keyboard yet
   at all (only output), etc ...

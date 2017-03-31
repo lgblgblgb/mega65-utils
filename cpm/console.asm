@@ -42,8 +42,8 @@ string_p:	.RES 2
 cursor_x:	.RES 1
 cursor_y:	.RES 1
 cursor_blink_counter:	.RES 1
-kbd_modkeys:	.RES 1
-kbd_pressed:	.RES 1
+kbd_last:	.RES 1
+kbd_queued:	.RES 1
 
 
 .CODE
@@ -350,6 +350,10 @@ sprite_shaper2:
 	STA	$D020
 	LDA	#BG_COLOUR
 	STA	$D021
+	; misc
+	LDA	#0
+	STA	kbd_last
+	STA	kbd_queued
 	RTS
 .ENDPROC
 
@@ -383,17 +387,42 @@ sprite_shaper2:
 
 
 ; Keyboard scan codes to ASCII table.
-; Note: some keys are handled as control keys with de-facto standard value, eg RETURN = 13
-; however some of them like SHIFT are *NOT*.
+; some keys are handled as control keys with de-facto standard value, eg RETURN = 13
+; key positions with 0 values are not handled. Key value 128 means the shift keys
 scan2ascii:
 	.BYTE	8,13,0,0,0,0,0,0
-	.BYTE	"3wa4zse",0	; 0 at the end = shift, it's not handled here simply
+	.BYTE	"3wa4zse",128
 	.BYTE	"5rd6cftx"
 	.BYTE	"7yg8bhuv"
 	.BYTE	"9ij0mkon"
 	.BYTE	"+pl-.:@,"
-	.BYTE	"#*;",0,0,"=^/"
+	.BYTE	"#*;",0,128,"=^/"
 	.BYTE	"1",0,0,"2 ",0,"q",0
+	; Shifted versions of the keys (here, shift keys must be unhandled!!!)
+	.BYTE	0,0,0,0,0,0,0,0
+	.BYTE	"3WA4ZSE",0
+	.BYTE	"5RD6CFTX"
+	.BYTE	"7YG8BHUV"
+	.BYTE	"9IJ0MKON"
+	.BYTE	"+PL-.:@,"
+	.BYTE	"#*;",0,0,"=^/"
+	.BYTE	"1",0,0,"2 ",0,"Q",0
+	
+
+
+.PROC	update_keyboard
+	CMP	#0
+	BEQ	return
+	CMP	kbd_last
+	BEQ	return
+	STA	kbd_last
+	LDX	kbd_queued
+	BNE	return
+	STA	kbd_queued
+	STA	$FCD
+return:
+	RTS
+.ENDPROC
 
 
 
@@ -404,8 +433,8 @@ scan2ascii:
 	PHZ
 	; Scan the keyboard, use key buffer to store result, etc ...
 	; TODO: Keyboard scanning does not need to be done maybe at every VIC frame though ...
+	.SCOPE
 	LDX	#0
-	STX	kbd_modkeys
 	STX	kbd_pressed
 	STA	$DC00
 	LDA	$DC01
@@ -422,32 +451,18 @@ scan1:
 scan2:
 	LSR	A
 	BCS	not_this_key
-
-
-	PHA
-	LDA	scan2ascii,X
-	STA	$801
-	PLA
-
-
-;	CPZ	#15
-;	BEQ	key_is_shift
-;	CPZ	#52
-;	BEQ	key_is_shift
-;	CPZ	#58
-;	BEQ	not_this_key	; this time, we don't use CTRL yet
-;	CPZ	#61
-;	BEQ	not_this_key	; this time, we don't use C= yet
-;	STZ	kbd_pressed
-;	JMP	not_this_key
-;key_is_shift:
-;	SMB0	kbd_modkeys
-
-
-
-
-
-
+	PHA				; BEGIN: a given key is found to be pressed
+	LDA	scan2ascii,X		; translate keycode to ASCII (or some other info ...)
+	BEQ	key_unhandled		; we don't want to handle this key
+	BPL	key_handled
+	TXA
+	ORA	#64
+	TAX
+	JMP	key_unhandled
+key_handled:
+	STA	kbd_pressed
+key_unhandled:
+	PLA				; END: a given key is found to be pressed
 not_this_key:
 	INX
 	DEZ
@@ -465,8 +480,11 @@ was_key_here:
 	BCS	scan1
 not_any:
 	; Ok, diagnostize the result, we have kbd_modkeys for key modifiers, and kbd_pressed for the pressed non-modifier key
-
+	kbd_pressed = * + 1
+	LDA	#0
+	JSR	update_keyboard
 no_scan:
+	.ENDSCOPE
 	; TODO: simple audio events like "bell" (ascii code 7)?
 	; Cursor blink stuff
 	LDA	cursor_blink_counter
@@ -507,49 +525,23 @@ no_scan:
 .ENDPROC
 
 
-.PROC	wait_for_key
-	LDA	#$FE
-	STA	$DC00
+.EXPORT	conin_check_status
+.PROC	conin_check_status
+	LDA	kbd_queued
+	BEQ	return
 	LDA	#$FF
-wait:
-	CMP	$DC01
-	;INC	$D021
-	BEQ	wait
+return:
 	RTS
 .ENDPROC
 
 
-test_string:
-	.BYTE	"10 for a=1 to 10",13,"20 print a",13,"30 next a",13,"list",13,"run",0
-test_string_pos:
-	.BYTE 0
-
-
-.EXPORT kbdin_wait
-.PROC	kbdin_wait
-;	JSR	wait_for_key
-;	LDA	#'A'
-	LDX	test_string_pos
-	LDA	test_string,X
-wow:
-	BEQ	wow
-	INX
-	STX	test_string_pos
+.EXPORT	conin_get_with_wait
+.PROC	conin_get_with_wait
+	LDA	kbd_queued
+	BEQ	conin_get_with_wait
+	PHA
+	LDA	#0
+	STA	kbd_queued
+	PLA
 	RTS
 .ENDPROC
-
-
-
-.EXPORT kbd_test
-.PROC	kbd_test
-	LDA	kbd_pressed
-	BEQ	kbd_test
-	CMP	displayed
-	BEQ	kbd_test
-	STA	displayed
-	JSR	write_hex_byte
-	JMP	kbd_test
-
-displayed: .BYTE 0
-.ENDPROC
-

@@ -160,14 +160,14 @@ loop:
 
 ; BIOS CONST  (Returns its status in A; 0 if no character is ready, 0FFh if one is.)
 .PROC	bios_2
-	LDA	#$FF
+	JSR	conin_check_status
 	STA	cpu_a
 	JMP	cpu_start_with_ret
 .ENDPROC
 
 ; BIOS CONIN  (Wait until the keyboard is ready to provide a character, and return it in A.)
 .PROC	bios_3
-	JSR	kbdin_wait
+	JSR	conin_get_with_wait
 	STA	cpu_a
 	JMP	cpu_start_with_ret
 .ENDPROC
@@ -265,8 +265,6 @@ bios_call_show_and_halt = bios_call::bios_unknown_big
 	STA	cpu_pch			; reset address was 0, now with high byte modified to 1, it's 0x100, the start address of CP/M programs.
 	WRISTR	{"Entering into i8080 mode",13,10,13,10}
 	CLI				; hmmm! enable interrupts oh-oh!
-	.IMPORT	kbd_test
-	;JSR	kbd_test
 	JMP	cpu_start
 .ENDPROC
 

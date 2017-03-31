@@ -23,6 +23,7 @@ SOURCES		= $(shell ls *.asm)
 INCLUDES	= $(shell ls *.inc) cpu_tables.inc
 OBJECTS		= $(SOURCES:.asm=.o)
 XEMU_SNAPSHOT	= xemu-test.snap
+M65_IP		= 1.1.1.1
 KICKUP		= ../KICKUP.M65
 SDIMG		= ../sdcard.img
 SDIMG_GZ	= ../sdcard.img.gz
@@ -36,6 +37,7 @@ CA65_OPTS	= -t none
 LD65_OPTS	= -C $(LD65_CFG)
 
 XEMU_M65	= xemu-xmega65
+ETHERLOAD	= mega65-etherload
 C1541		= c1541
 CA65		= ca65
 LD65		= ld65
@@ -63,6 +65,9 @@ $(PRG): $(OBJECTS) $(LD65_CFG) $(ALL_DEPENDS)
 $(DISK_IMAGE): $(PRG) $(ALL_DEPENDS)
 	$(RM) -f $@
 	echo "format lgb-test,00 d81 $@\nwrite $(PRG) $(PRG_ON_DISK)" | $(C1541)
+
+ethertest: $(PRG) $(ALL_DEPENDS)
+	$(ETHERLOAD) $(M65_IP) $(PRG)
 
 test: $(DISK_IMAGE) $(ALL_DEPENDS) $(KICKUP) $(SDIMG)
 	$(MAKE) $(XEMU_SNAPSHOT)
@@ -104,5 +109,4 @@ distclean:
 	$(MAKE) clean
 	$(RM) -f $(XEMU_SNAPSHOT) $(KICKUP) $(SDIMG) 8080/mbasic-real.com
 
-.PHONY: all clean distclean test test-debug
-
+.PHONY: all clean distclean test test-debug ethertest

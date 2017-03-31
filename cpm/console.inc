@@ -39,7 +39,9 @@
 .IMPORT		write_crlf
 .IMPORT		init_console
 .IMPORT		reg_dump
-.IMPORT		kbdin_wait
+.IMPORT		conin_check_status
+.IMPORT		conin_get_with_wait
+
 
 .MACRO	WRISTR	str
 	JSR	write_inline_string
