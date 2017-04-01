@@ -23,7 +23,7 @@ SOURCES		= $(shell ls *.asm)
 INCLUDES	= $(shell ls *.inc) cpu_tables.inc
 OBJECTS		= $(SOURCES:.asm=.o)
 XEMU_SNAPSHOT	= xemu-test.snap
-M65_IP		= 1.1.1.1
+M65_IP		= 192.168.0.65
 KICKUP		= ../KICKUP.M65
 SDIMG		= ../sdcard.img
 SDIMG_GZ	= ../sdcard.img.gz

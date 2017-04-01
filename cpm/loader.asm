@@ -117,6 +117,7 @@ hypervisor_ok:
 	; At this point, we identified a working M65, in M65 (!) I/O mode, though the memory configuration
 	; it like C64, with RAM, KERNAL(C64)L+BASIC(C64)+I/O(M65!!) mapped
 	LDX	#$7F
+	LDX	#$2E		; TODO!!!! REMOVE FIXME!!
 vic_clear_loop:
 	STZ	$D000,X		; reset Xth VIC4 register (at $2F, it will reset I/O mode, btw)
 	STZ	$D400,X		; also the SIDs, just to mute (possible) stuffs ...
@@ -127,10 +128,12 @@ vic_clear_loop:
 	STA	$D011
 	LDA	#$24
 	STA	$D018
+	LDA	#$C8
+	STA	$D016
 	LDA	#$E0
 	STA	$D031		; H640 + FAST(C65-FAST) + ATTR
 	LDA	#$40
-	STA	$D054		; M65 speed (M65 CPU speed, it seems to need C65-speed to be set first, but it's done with writing $D031 above)
+	TSB	$D054		; M65 speed (M65 CPU speed, it seems to need C65-speed to be set first, but it's done with writing $D031 above)
 	RTS
 .ENDPROC
 

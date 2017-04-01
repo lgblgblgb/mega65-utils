@@ -178,12 +178,21 @@ write_hex_nib:
 	BEQ	cr_char
 	CMP	#10
 	BEQ	lf_char
+	CMP	#8
+	BEQ	bs_char
 	TAX
 	LDA	#'^'
 	JSR	write_char
 	TXA
 	JSR	write_hex_byte
 	PLX
+	RTS
+bs_char:
+	LDA	cursor_x
+	BEQ	:+
+	DEA
+	STA	cursor_x
+:	PLX
 	RTS
 cr_char:
 	LDA	#0
@@ -224,32 +233,38 @@ lf_char:
 	RTS
 	; Start of scrolling of screen
 scroll:
-	LDX	#0
-scroll0:
-	LDA	$850,X
-	STA	$800,X
-	LDA	$950,X
-	STA	$900,X
-	LDA	$A50,X
-	STA	$A00,X
-	LDA	$B50,X
-	STA	$B00,X
-	LDA	$C50,X
-	STA	$C00,X
-	LDA	$D50,X
-	STA	$D00,X
-	LDA	$E50,X
-	STA	$E00,X
-	LDA	$F50,X
-	STA	$F00,X
-	INX
-	BNE	scroll0
-	LDA	#32
-scroll1:
-	STA	$F80,X
-	INX
-	CPX	#80
-	BNE	scroll1
+	LDA	#0
+	STA	$D702
+	LDA	#.HIBYTE(scroll_dma_list)
+	STA	$D701
+	LDA	#.LOBYTE(scroll_dma_list)
+	STA	$D700	; this actually starts the DMA operation
+;	LDX	#0
+;scroll0:
+;	LDA	$850,X
+;	STA	$800,X
+;	LDA	$950,X
+;	STA	$900,X
+;	LDA	$A50,X
+;	STA	$A00,X
+;	LDA	$B50,X
+;	STA	$B00,X
+;	LDA	$C50,X
+;	STA	$C00,X
+;	LDA	$D50,X
+;	STA	$D00,X
+;	LDA	$E50,X
+;	STA	$E00,X
+;	LDA	$F50,X
+;	STA	$F00,X
+;	INX
+;	BNE	scroll0
+;	LDA	#32
+;scroll1:
+;	STA	$F80,X
+;	INX
+;	CPX	#80
+;	BNE	scroll1
 	; end of scrolling of screen
 	PLX
 	RTS
@@ -257,6 +272,23 @@ screen_line_tab_lo:
 	.BYTE	$0,$50,$a0,$f0,$40,$90,$e0,$30,$80,$d0,$20,$70,$c0,$10,$60,$b0,$0,$50,$a0,$f0,$40,$90,$e0,$30,$80
 screen_line_tab_hi:
 	.BYTE	$8,$8,$8,$8,$9,$9,$9,$a,$a,$a,$b,$b,$b,$c,$c,$c,$d,$d,$d,$d,$e,$e,$e,$f,$f
+scroll_dma_list:	; DMA list for scolling
+	; First DMA entry (chained) to copy screen content [this is "old DMA behaviour"!]
+	.BYTE	4	; DMA command, and other info (bit2=chained, bit0/1=command: copy=0)
+	.WORD	24*80	; DMA operation length
+	.WORD	$850	; source addr
+	.BYTE	0	; source bank + other info
+	.WORD	$800	; target addr
+	.BYTE	0	; target bank + other info
+	.WORD	0	; modulo ... no idea, just skip it
+	; Second DMA entry (last) to erase bottom line
+	.BYTE	3	; DMA command, and other info (not chained so last, op is 3, which is fill)
+	.WORD	80	; DMA operation length
+	.WORD	32	; source addr, NOTE: in case of FILL op (now!) this is not an address, but low byte is the fill value!!
+	.BYTE	0	; source bank + other info
+	.WORD	$F80	; target addr
+	.BYTE	0	; target bank + other info
+	.WORD	0	; modulo ... no idea, just skip it
 .ENDPROC
 
 
@@ -412,14 +444,17 @@ scan2ascii:
 
 .PROC	update_keyboard
 	CMP	#0
-	BEQ	return
+	BNE	no_return
+	STA	kbd_last
+	RTS
+no_return:
 	CMP	kbd_last
 	BEQ	return
 	STA	kbd_last
 	LDX	kbd_queued
 	BNE	return
 	STA	kbd_queued
-	STA	$FCD
+	STA	$84D
 return:
 	RTS
 .ENDPROC
@@ -515,7 +550,7 @@ no_scan:
 	CLC
 	ADC	#50
 	STA	$D001	; cursor Y coordinate!
-	INC	$FCE	; "heartbeat"
+	INC	$84E	; "heartbeat"
 	PLZ
 	PLY
 	PLX

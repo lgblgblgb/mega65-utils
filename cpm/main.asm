@@ -292,6 +292,6 @@ bios_call_show_and_halt = bios_call::bios_unknown_big
 	JSR	reg_dump
 	WRISTR  {13,10,"HALTED.",13,10}
 halted:
-	INC	$fcf
+	INC	$84F
 	JMP	halted
 .ENDPROC
