@@ -40,7 +40,8 @@
 	;.INCBIN "8080/cpmver.com"
 	;.INCBIN "8080/cpmver-real.com"
 	;.INCBIN "8080/wow.com"
-	.INCBIN "8080/mbasic-real.com"
+	;.INCBIN "8080/mbasic-real.com"
+	.INCBIN	"8080/spectrum.rom"
 
 .CODE
 
@@ -106,9 +107,8 @@ fillzeropage:
 	BNE	fillzeropage
 	; Copy program to be executed
 	WRISTR	"4"
-	LDX	#1
+	LDX	#0
 	STX	umem_p1+1
-	DEX
 	LDZ	#0
 	LDY	#.HIBYTE(__PAYLOAD_SIZE__) + 1
 uploadloop:
@@ -258,12 +258,12 @@ bios_call_show_and_halt = bios_call::bios_unknown_big
 .PROC	app_main
 	JSR	init_console
 	JSR	clear_screen		; the fist call of this initiailizes console out functions
-	WRISTR	{"i8080 emulator and (re-implemented) CP/M for Mega-65 (C)2017 LGB",13,10}
+	WRISTR	{"Z80 emulator and (re-implemented) CP/M for Mega-65 (C)2017 LGB",13,10}
 	JSR	cpu_reset
 	JSR	install_software	; initializes i8080 CP/M memory, and "uploads" the software there we want to run
-	LDA	#1
-	STA	cpu_pch			; reset address was 0, now with high byte modified to 1, it's 0x100, the start address of CP/M programs.
-	WRISTR	{"Entering into i8080 mode",13,10,13,10}
+	LDA	#0
+	STA	cpu_pch			; reset address
+	WRISTR	{"Entering into Z80 mode",13,10,13,10}
 	CLI				; hmmm! enable interrupts oh-oh!
 	JMP	cpu_start
 .ENDPROC
@@ -284,7 +284,7 @@ bios_call_show_and_halt = bios_call::bios_unknown_big
 ; i8080 emulator will jump here on "cpu_unimplemented" event
 .EXPORT	return_cpu_unimplemented
 .PROC	return_cpu_unimplemented
-	WRISTR	{13,10,"*** Unimplemented i8080 opcode",13,10}
+	WRISTR	{13,10,"*** Unimplemented Z80 opcode",13,10}
 	JMP	halt
 .ENDPROC
 

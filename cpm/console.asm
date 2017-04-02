@@ -394,6 +394,10 @@ sprite_shaper2:
 .EXPORT	reg_dump
 .PROC	reg_dump
 	WRISTR	"OP="
+	LDA	cpu_prefix
+	JSR	write_hex_byte
+	LDA	cpu_makeup
+	JSR	write_hex_byte
 	LDA	cpu_op
 	JSR	write_hex_byte
 	WRISTR	" PC="

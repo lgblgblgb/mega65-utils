@@ -36,6 +36,6 @@
 .IMPORTZP cpu_hl, cpu_h, cpu_l
 .IMPORTZP cpu_pc, cpu_pch, cpu_pcl
 .IMPORTZP cpu_sp, cpu_sph, cpu_spl
-.IMPORTZP cpu_op
+.IMPORTZP cpu_op, cpu_prefix, cpu_makeup
 .IMPORTZP umem_p1
 .IMPORTZP umem_p2

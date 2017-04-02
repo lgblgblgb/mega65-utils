@@ -95,8 +95,12 @@ umem_p1_H16:	.RES 2
 umem_p2:	.RES 2
 umem_p2_H16:	.RES 2
 ; Only updated at exit, the CPU opcode (at cpu_pc) which caused the exit of i8080 mode
-.EXPORTZP	cpu_op
+.EXPORTZP	cpu_op, cpu_prefix, cpu_makeup
 cpu_op:		.RES 1
+cpu_prefix:	.RES 1
+cpu_makeup:	.RES 1
+; Others
+cpu_i:		.RES 1
 ; Must be after the last CPU specific ZP label
 cpu_last:
 
@@ -407,6 +411,18 @@ next_no_inc:
 
 NO_OP	= next_inc1
 
+
+opcode_ED_fetch:
+	INW	cpu_pc				; skip "ED"
+	LDA32Z	cpu_pc
+	ASL	A
+	TAX
+	BCC	:+
+	JMP	(opcode_jump_ED_table+$100,X)
+:	JMP	(opcode_jump_ED_table,X)
+
+
+
 ; NOTE: much compact decoding can be done for sure without a full
 ; jump table, and trickier way to decode opcodes. However I simply
 ; don't care about size, I am happy with jump tables, or even kinda
@@ -432,6 +448,27 @@ opcode_jump_table:
 	.WORD opc_D0,opc_D1,opc_D2,opc_D3,opc_D4,opc_D5,opc_D6,opc_D7,opc_D8,opc_D9,opc_DA,opc_DB,opc_DC,opc_DD,opc_DE,opc_DF
 	.WORD opc_E0,opc_E1,opc_E2,opc_E3,opc_E4,opc_E5,opc_E6,opc_E7,opc_E8,opc_E9,opc_EA,opc_EB,opc_EC,opc_ED,opc_EE,opc_EF
 	.WORD opc_F0,opc_F1,opc_F2,opc_F3,opc_F4,opc_F5,opc_F6,opc_F7,opc_F8,opc_F9,opc_FA,opc_FB,opc_FC,opc_FD,opc_FE,opc_FF
+opcode_jump_ED_table:
+	.WORD opc_ED_00,opc_ED_01,opc_ED_02,opc_ED_03,opc_ED_04,opc_ED_05,opc_ED_06,opc_ED_07,opc_ED_08,opc_ED_09,opc_ED_0A,opc_ED_0B,opc_ED_0C,opc_ED_0D,opc_ED_0E,opc_ED_0F
+	.WORD opc_ED_10,opc_ED_11,opc_ED_12,opc_ED_13,opc_ED_14,opc_ED_15,opc_ED_16,opc_ED_17,opc_ED_18,opc_ED_19,opc_ED_1A,opc_ED_1B,opc_ED_1C,opc_ED_1D,opc_ED_1E,opc_ED_1F
+	.WORD opc_ED_20,opc_ED_21,opc_ED_22,opc_ED_23,opc_ED_24,opc_ED_25,opc_ED_26,opc_ED_27,opc_ED_28,opc_ED_29,opc_ED_2A,opc_ED_2B,opc_ED_2C,opc_ED_2D,opc_ED_2E,opc_ED_2F
+	.WORD opc_ED_30,opc_ED_31,opc_ED_32,opc_ED_33,opc_ED_34,opc_ED_35,opc_ED_36,opc_ED_37,opc_ED_38,opc_ED_39,opc_ED_3A,opc_ED_3B,opc_ED_3C,opc_ED_3D,opc_ED_3E,opc_ED_3F
+	.WORD opc_ED_40,opc_ED_41,opc_ED_42,opc_ED_43,opc_ED_44,opc_ED_45,opc_ED_46,opc_ED_47,opc_ED_48,opc_ED_49,opc_ED_4A,opc_ED_4B,opc_ED_4C,opc_ED_4D,opc_ED_4E,opc_ED_4F
+	.WORD opc_ED_50,opc_ED_51,opc_ED_52,opc_ED_53,opc_ED_54,opc_ED_55,opc_ED_56,opc_ED_57,opc_ED_58,opc_ED_59,opc_ED_5A,opc_ED_5B,opc_ED_5C,opc_ED_5D,opc_ED_5E,opc_ED_5F
+	.WORD opc_ED_60,opc_ED_61,opc_ED_62,opc_ED_63,opc_ED_64,opc_ED_65,opc_ED_66,opc_ED_67,opc_ED_68,opc_ED_69,opc_ED_6A,opc_ED_6B,opc_ED_6C,opc_ED_6D,opc_ED_6E,opc_ED_6F
+	.WORD opc_ED_70,opc_ED_71,opc_ED_72,opc_ED_73,opc_ED_74,opc_ED_75,opc_ED_76,opc_ED_77,opc_ED_78,opc_ED_79,opc_ED_7A,opc_ED_7B,opc_ED_7C,opc_ED_7D,opc_ED_7E,opc_ED_7F
+	.WORD opc_ED_80,opc_ED_81,opc_ED_82,opc_ED_83,opc_ED_84,opc_ED_85,opc_ED_86,opc_ED_87,opc_ED_88,opc_ED_89,opc_ED_8A,opc_ED_8B,opc_ED_8C,opc_ED_8D,opc_ED_8E,opc_ED_8F
+	.WORD opc_ED_90,opc_ED_91,opc_ED_92,opc_ED_93,opc_ED_94,opc_ED_95,opc_ED_96,opc_ED_97,opc_ED_98,opc_ED_99,opc_ED_9A,opc_ED_9B,opc_ED_9C,opc_ED_9D,opc_ED_9E,opc_ED_9F
+	.WORD opc_ED_A0,opc_ED_A1,opc_ED_A2,opc_ED_A3,opc_ED_A4,opc_ED_A5,opc_ED_A6,opc_ED_A7,opc_ED_A8,opc_ED_A9,opc_ED_AA,opc_ED_AB,opc_ED_AC,opc_ED_AD,opc_ED_AE,opc_ED_AF
+	.WORD opc_ED_B0,opc_ED_B1,opc_ED_B2,opc_ED_B3,opc_ED_B4,opc_ED_B5,opc_ED_B6,opc_ED_B7,opc_ED_B8,opc_ED_B9,opc_ED_BA,opc_ED_BB,opc_ED_BC,opc_ED_BD,opc_ED_BE,opc_ED_BF
+	.WORD opc_ED_C0,opc_ED_C1,opc_ED_C2,opc_ED_C3,opc_ED_C4,opc_ED_C5,opc_ED_C6,opc_ED_C7,opc_ED_C8,opc_ED_C9,opc_ED_CA,opc_ED_CB,opc_ED_CC,opc_ED_CD,opc_ED_CE,opc_ED_CF
+	.WORD opc_ED_D0,opc_ED_D1,opc_ED_D2,opc_ED_D3,opc_ED_D4,opc_ED_D5,opc_ED_D6,opc_ED_D7,opc_ED_D8,opc_ED_D9,opc_ED_DA,opc_ED_DB,opc_ED_DC,opc_ED_DD,opc_ED_DE,opc_ED_DF
+	.WORD opc_ED_E0,opc_ED_E1,opc_ED_E2,opc_ED_E3,opc_ED_E4,opc_ED_E5,opc_ED_E6,opc_ED_E7,opc_ED_E8,opc_ED_E9,opc_ED_EA,opc_ED_EB,opc_ED_EC,opc_ED_ED,opc_ED_EE,opc_ED_EF
+	.WORD opc_ED_F0,opc_ED_F1,opc_ED_F2,opc_ED_F3,opc_ED_F4,opc_ED_F5,opc_ED_F6,opc_ED_F7,opc_ED_F8,opc_ED_F9,opc_ED_FA,opc_ED_FB,opc_ED_FC,opc_ED_FD,opc_ED_FE,opc_ED_FF
+
+
+
+
 
 ; NOTE: the emulation (it's more simple for *MYSELF* at least) of opcodes consits of linear
 ; sequence of opcode emulation (see later). It's more easy to compare with opcode lists, etc.
@@ -481,6 +518,46 @@ opc_JP:
 	JMP	next_no_inc	; continue at the given new PC, no need for incrementing it, for sure!
 
 
+; 8-bit relative branches of Z80, not found originally in i8080
+opc_JR_Z:	COND_OP BR_ZERO,  opc_JR, next_inc2
+opc_JR_NZ:	COND_OP BR_NZERO, opc_JR, next_inc2
+opc_JR_C:	COND_OP BR_CARRY, opc_JR, next_inc2
+opc_JR_NC:	COND_OP BR_NCARRY,opc_JR, next_inc2
+.PROC	opc_JR
+	LDX	#$FF		; this will be the high byte of signed extension offset, now prepared for negative one by default
+	INZ			; Z=1 now
+	LDA32Z	cpu_pc		; now we loaded the byte after opcode, but we have Z=1, do not forget to reset back at the end! we could use INW cpu_pc, but it's a slower op.
+	; The read offset byte is 8 bit signed, and is relative to the PC _after_ the "JR nn" opcode!!
+	INA			; to compensate the issue above, we do a single INA, _AND_ we will use "SEC" instead of CLC before the first ADC!
+	BMI	:+		; check the sign of the offset got. Basically with LDX #FF, BMI, INX we do sign extension to 16 bit, with high byte of A being in X
+	INX			; if offset was positive (BMI not taken above), INX will cause X=0, the high byte of the offset
+:	SEC			; please read the comment at "INA" above!!!
+	ADC	cpu_pcl
+	STA	cpu_pcl
+	TXA
+	ADC	cpu_pch
+	STA	cpu_pch
+	DEZ			; this sets back Z to zero, as it should be in the emulator!
+	JMP	next_no_inc
+
+;	TODO : dead code, remove this!
+	INW	cpu_pc
+	LDX	#$FF		; this will be the high byte of offset (now for negative value by default)
+	LDA32Z	cpu_pc		; this will load the PC offset which should be added (as signed!) to the PC _after_ the "JR nn" opcode
+	BMI	as_minus2
+	INX			; of offset was positive (BMI not taken above), INX will cause X=0, the high byte
+as_minus2:
+	INW	cpu_pc		; we want to seek PC after "JR nn" and add offset there!
+	CLC
+	ADC	cpu_pcl		; add low byte of PC + offset
+	STA	cpu_pcl
+	TXA			; get sign extension of offset into A
+	ADC	cpu_pch		; add high byte of offset of the above
+	STA	cpu_pch
+	JMP	next_no_inc
+.ENDPROC
+
+
 opc_RET_Z:	COND_OP BR_ZERO,  opc_RET, next_inc1
 opc_RET_NZ:	COND_OP BR_NZERO, opc_RET, next_inc1
 opc_RET_C:	COND_OP BR_CARRY, opc_RET, next_inc1
@@ -522,7 +599,7 @@ opc_07:					; RLCA
 	STA	cpu_a
 	SMB0	cpu_f
 	JMP	next_inc1
-opc_08= NO_OP				; *NON-STANDARD* NOP	[EX AF,AF' on Z80]
+opc_08= TODO_BASE			; *NON-STANDARD* NOP	[EX AF,AF' on Z80]
 opc_09: OPC_ADD_HL_RR	cpu_bc		; ADD HL,BC
 opc_0A:	OPC_LD_R_RI	cpu_a, cpu_bc	; LD A,(BC)
 opc_0B:	OPC_DEC_RR	cpu_bc		; DEC BC
@@ -542,7 +619,7 @@ opc_0F:					; RRCA
 	STA	cpu_a
 	SMB0	cpu_f
 	JMP	next_inc1
-opc_10= NO_OP				; *NON-STANDARD* NOP	[DJNZ on Z80]
+opc_10= TODO_BASE			; *NON-STANDARD* NOP	[DJNZ on Z80]
 opc_11: OPC_LD_RR_NN	cpu_de		; LD DE,nn
 opc_12: OPC_LD_RI_R	cpu_de, cpu_a	; LD (DE),A
 opc_13:	OPC_INC_RR	cpu_de		; INC DE
@@ -556,7 +633,7 @@ opc_17:					; RLA
 	ROL	A		; shift back i8080 flags WITH feeding carry with the previouS ROL
 	STA	cpu_f
 	JMP	next_inc1
-opc_18= NO_OP				; *NON-STANDARD* NOP	[JR on Z80]
+opc_18= TODO_BASE			; *NON-STANDARD* NOP	[JR on Z80]
 opc_19:	OPC_ADD_HL_RR	cpu_de		; ADD HL,DE
 opc_1A: OPC_LD_R_RI	cpu_a, cpu_de	; LD A,(DE)
 opc_1B:	OPC_DEC_RR	cpu_de		; DEC DE
@@ -570,7 +647,7 @@ opc_1F: 				; RRA
 	ROL	A
 	STA	cpu_f
 	JMP	next_inc1
-opc_20= NO_OP				; *NON-STANDARD* NOP	[JR NZ on Z80]
+opc_20=	opc_JR_NZ			; JR NZ	[Z80]
 opc_21: OPC_LD_RR_NN	cpu_hl		; LD HL,nn
 opc_22:					; LD (nn),HL
 	MEMCONSTPTROP_BEGIN
@@ -585,8 +662,8 @@ opc_23:	OPC_INC_RR	cpu_hl		; INC HL
 opc_24: OPC_INC_R	cpu_h		; INC H
 opc_25: OPC_DEC_R	cpu_h		; DEC H
 opc_26:	OPC_LD_R_N	cpu_h		; LD H,n
-opc_27= TODO				; DAA
-opc_28= NO_OP				; *NON-STANDARD* NOP	[JR Z on Z80]
+opc_27= TODO_BASE			; DAA
+opc_28= TODO_BASE			; *NON-STANDARD* NOP	[JR Z on Z80]
 opc_29: OPC_ADD_HL_RR	cpu_hl		; ADD HL,HL
 opc_2A:					; LD HL,(nn)
 	MEMCONSTPTROP_BEGIN	
@@ -606,7 +683,7 @@ opc_2F:					; CPL
 	EOR	#$FF
 	STA	cpu_a
 	JMP	next_inc1
-opc_30= NO_OP				; *NON-STANDARD* NOP	[JR NC on Z80]
+opc_30= TODO_BASE			; *NON-STANDARD* NOP	[JR NC on Z80]
 opc_31: OPC_LD_RR_NN	cpu_sp		; LD SP,nn
 opc_32:					; LD (nn),A
 	MEMCONSTPTROP_BEGIN
@@ -638,7 +715,7 @@ opc_36:	OPC_LD_RI_N	cpu_hl		; LD (HL),n
 opc_37:					; SCF
 	SMB0	cpu_f
 	JMP	next_inc1
-opc_38= NO_OP				; *NON-STANDARD* NOP	[JR C on Z80]
+opc_38= TODO_BASE			; *NON-STANDARD* NOP	[JR C on Z80]
 opc_39:	OPC_ADD_HL_RR	cpu_sp		; ADD HL,SP
 opc_3A:					; LD A,(nn)
 	MEMCONSTPTROP_BEGIN
@@ -809,7 +886,7 @@ opc_C7:	OPC_RST		$00		; RST 00h
 opc_C8= opc_RET_Z			; RET Z
 opc_C9= opc_RET				; RET
 opc_CA= opc_JP_Z			; JP Z
-opc_CB= opc_JP				; *NON-STANDARD* JP nn	[CB-prefix on Z80]
+opc_CB= TODO_BASE			; *NON-STANDARD* JP nn	[CB-prefix on Z80]
 opc_CC= opc_CALL_Z			; CALL Z,nn
 opc_CD= opc_CALL			; CALL nn
 opc_CE:	INW		cpu_pc		; ADC A,n
@@ -825,14 +902,14 @@ opc_D6:	INW		cpu_pc		; SUB A,byte
 	OPC_SUB_A_R	SBC32Z, cpu_pc
 opc_D7:	OPC_RST		$10		; RST 10h
 opc_D8= opc_RET_C			; RET C
-opc_D9= opc_RET				; *NON-STANDARD* RET		[EXX on Z80]
+opc_D9= TODO_BASE			; *NON-STANDARD* RET		[EXX on Z80]
 opc_DA= opc_JP_C			; JP C,nn
 opc_DB:					; IN A,(n)
 	LDA	#$FF	; just fake 0xFF for all port I/O
 	STA	cpu_a
 	JMP	next_inc2
 opc_DC= opc_CALL_C			; CALL C,nn
-opc_DD= opc_CALL			; *NON-STANDARD* CALL nn	[DD-prefix on Z80]
+opc_DD= TODO_BASE			; *NON-STANDARD* CALL nn	[DD-prefix on Z80]
 opc_DE:	INW		cpu_pc		; SBC A,byte
 	OPC_SBC_A_R	SBC32Z, cpu_pc
 opc_DF:	OPC_RST		$18		; RST 18h
@@ -877,7 +954,7 @@ opc_EB:					; EX DE,HL
 	STX	cpu_h
 	JMP	next_inc1
 opc_EC= opc_CALL_PE			; CALL PE,nn
-opc_ED= opc_CALL			; *NON-STANDARD* CALL nn	[ED-prefix on Z80]
+opc_ED= opcode_ED_fetch			; ED-prefix on Z80
 opc_EE:	INW		cpu_pc		; XOR A,n
 	OPC_LOGICOP_GEN EOR32Z, cpu_pc, szp_f_tab
 opc_EF:	OPC_RST		$28		; RST 28h
@@ -900,10 +977,273 @@ opc_F9:					; LD SP,HL
 opc_FA= opc_JP_M			; JP M,nn
 opc_FB= next_inc1			; EI	!!INTERRUPTS ARE NOT EMULATED!!
 opc_FC= opc_CALL_M			; CALL M,nn
-opc_FD= opc_CALL			; *NON-STANDARD* CALL nn	[FD-prefix on Z80]
+opc_FD= TODO_BASE			; *NON-STANDARD* CALL nn	[FD-prefix on Z80]
 opc_FE:	INW	cpu_pc			; CP n
 	OPC_CP_A_R	SBC32Z,cpu_pc
 opc_FF:	OPC_RST		$38		; RST 38h
+
+
+opc_ED_00 = TODO_ED
+opc_ED_01 = TODO_ED
+opc_ED_02 = TODO_ED
+opc_ED_03 = TODO_ED
+opc_ED_04 = TODO_ED
+opc_ED_05 = TODO_ED
+opc_ED_06 = TODO_ED
+opc_ED_07 = TODO_ED
+opc_ED_08 = TODO_ED
+opc_ED_09 = TODO_ED
+opc_ED_0A = TODO_ED
+opc_ED_0B = TODO_ED
+opc_ED_0C = TODO_ED
+opc_ED_0D = TODO_ED
+opc_ED_0E = TODO_ED
+opc_ED_0F = TODO_ED
+opc_ED_10 = TODO_ED
+opc_ED_11 = TODO_ED
+opc_ED_12 = TODO_ED
+opc_ED_13 = TODO_ED
+opc_ED_14 = TODO_ED
+opc_ED_15 = TODO_ED
+opc_ED_16 = TODO_ED
+opc_ED_17 = TODO_ED
+opc_ED_18 = TODO_ED
+opc_ED_19 = TODO_ED
+opc_ED_1A = TODO_ED
+opc_ED_1B = TODO_ED
+opc_ED_1C = TODO_ED
+opc_ED_1D = TODO_ED
+opc_ED_1E = TODO_ED
+opc_ED_1F = TODO_ED
+opc_ED_20 = TODO_ED
+opc_ED_21 = TODO_ED
+opc_ED_22 = TODO_ED
+opc_ED_23 = TODO_ED
+opc_ED_24 = TODO_ED
+opc_ED_25 = TODO_ED
+opc_ED_26 = TODO_ED
+opc_ED_27 = TODO_ED
+opc_ED_28 = TODO_ED
+opc_ED_29 = TODO_ED
+opc_ED_2A = TODO_ED
+opc_ED_2B = TODO_ED
+opc_ED_2C = TODO_ED
+opc_ED_2D = TODO_ED
+opc_ED_2E = TODO_ED
+opc_ED_2F = TODO_ED
+opc_ED_30 = TODO_ED
+opc_ED_31 = TODO_ED
+opc_ED_32 = TODO_ED
+opc_ED_33 = TODO_ED
+opc_ED_34 = TODO_ED
+opc_ED_35 = TODO_ED
+opc_ED_36 = TODO_ED
+opc_ED_37 = TODO_ED
+opc_ED_38 = TODO_ED
+opc_ED_39 = TODO_ED
+opc_ED_3A = TODO_ED
+opc_ED_3B = TODO_ED
+opc_ED_3C = TODO_ED
+opc_ED_3D = TODO_ED
+opc_ED_3E = TODO_ED
+opc_ED_3F = TODO_ED
+opc_ED_40 = TODO_ED
+opc_ED_41 = TODO_ED
+opc_ED_42 = TODO_ED
+opc_ED_43 = TODO_ED
+opc_ED_44 = TODO_ED
+opc_ED_45 = TODO_ED
+opc_ED_46 = TODO_ED
+opc_ED_47:			; LD I,A
+	LDA	cpu_a
+	STA	cpu_i
+	JMP	next_inc1
+opc_ED_48 = TODO_ED
+opc_ED_49 = TODO_ED
+opc_ED_4A = TODO_ED
+opc_ED_4B = TODO_ED
+opc_ED_4C = TODO_ED
+opc_ED_4D = TODO_ED
+opc_ED_4E = TODO_ED
+opc_ED_4F = TODO_ED
+opc_ED_50 = TODO_ED
+opc_ED_51 = TODO_ED
+opc_ED_52 = TODO_ED
+opc_ED_53 = TODO_ED
+opc_ED_54 = TODO_ED
+opc_ED_55 = TODO_ED
+opc_ED_56 = TODO_ED
+opc_ED_57 = TODO_ED
+opc_ED_58 = TODO_ED
+opc_ED_59 = TODO_ED
+opc_ED_5A = TODO_ED
+opc_ED_5B = TODO_ED
+opc_ED_5C = TODO_ED
+opc_ED_5D = TODO_ED
+opc_ED_5E = TODO_ED
+opc_ED_5F = TODO_ED
+opc_ED_60 = TODO_ED
+opc_ED_61 = TODO_ED
+opc_ED_62 = TODO_ED
+opc_ED_63 = TODO_ED
+opc_ED_64 = TODO_ED
+opc_ED_65 = TODO_ED
+opc_ED_66 = TODO_ED
+opc_ED_67 = TODO_ED
+opc_ED_68 = TODO_ED
+opc_ED_69 = TODO_ED
+opc_ED_6A = TODO_ED
+opc_ED_6B = TODO_ED
+opc_ED_6C = TODO_ED
+opc_ED_6D = TODO_ED
+opc_ED_6E = TODO_ED
+opc_ED_6F = TODO_ED
+opc_ED_70 = TODO_ED
+opc_ED_71 = TODO_ED
+opc_ED_72 = TODO_ED
+opc_ED_73 = TODO_ED
+opc_ED_74 = TODO_ED
+opc_ED_75 = TODO_ED
+opc_ED_76 = TODO_ED
+opc_ED_77 = TODO_ED
+opc_ED_78 = TODO_ED
+opc_ED_79 = TODO_ED
+opc_ED_7A = TODO_ED
+opc_ED_7B = TODO_ED
+opc_ED_7C = TODO_ED
+opc_ED_7D = TODO_ED
+opc_ED_7E = TODO_ED
+opc_ED_7F = TODO_ED
+opc_ED_80 = TODO_ED
+opc_ED_81 = TODO_ED
+opc_ED_82 = TODO_ED
+opc_ED_83 = TODO_ED
+opc_ED_84 = TODO_ED
+opc_ED_85 = TODO_ED
+opc_ED_86 = TODO_ED
+opc_ED_87 = TODO_ED
+opc_ED_88 = TODO_ED
+opc_ED_89 = TODO_ED
+opc_ED_8A = TODO_ED
+opc_ED_8B = TODO_ED
+opc_ED_8C = TODO_ED
+opc_ED_8D = TODO_ED
+opc_ED_8E = TODO_ED
+opc_ED_8F = TODO_ED
+opc_ED_90 = TODO_ED
+opc_ED_91 = TODO_ED
+opc_ED_92 = TODO_ED
+opc_ED_93 = TODO_ED
+opc_ED_94 = TODO_ED
+opc_ED_95 = TODO_ED
+opc_ED_96 = TODO_ED
+opc_ED_97 = TODO_ED
+opc_ED_98 = TODO_ED
+opc_ED_99 = TODO_ED
+opc_ED_9A = TODO_ED
+opc_ED_9B = TODO_ED
+opc_ED_9C = TODO_ED
+opc_ED_9D = TODO_ED
+opc_ED_9E = TODO_ED
+opc_ED_9F = TODO_ED
+opc_ED_A0 = TODO_ED
+opc_ED_A1 = TODO_ED
+opc_ED_A2 = TODO_ED
+opc_ED_A3 = TODO_ED
+opc_ED_A4 = TODO_ED
+opc_ED_A5 = TODO_ED
+opc_ED_A6 = TODO_ED
+opc_ED_A7 = TODO_ED
+opc_ED_A8 = TODO_ED
+opc_ED_A9 = TODO_ED
+opc_ED_AA = TODO_ED
+opc_ED_AB = TODO_ED
+opc_ED_AC = TODO_ED
+opc_ED_AD = TODO_ED
+opc_ED_AE = TODO_ED
+opc_ED_AF = TODO_ED
+opc_ED_B0 = TODO_ED
+opc_ED_B1 = TODO_ED
+opc_ED_B2 = TODO_ED
+opc_ED_B3 = TODO_ED
+opc_ED_B4 = TODO_ED
+opc_ED_B5 = TODO_ED
+opc_ED_B6 = TODO_ED
+opc_ED_B7 = TODO_ED
+opc_ED_B8 = TODO_ED
+opc_ED_B9 = TODO_ED
+opc_ED_BA = TODO_ED
+opc_ED_BB = TODO_ED
+opc_ED_BC = TODO_ED
+opc_ED_BD = TODO_ED
+opc_ED_BE = TODO_ED
+opc_ED_BF = TODO_ED
+opc_ED_C0 = TODO_ED
+opc_ED_C1 = TODO_ED
+opc_ED_C2 = TODO_ED
+opc_ED_C3 = TODO_ED
+opc_ED_C4 = TODO_ED
+opc_ED_C5 = TODO_ED
+opc_ED_C6 = TODO_ED
+opc_ED_C7 = TODO_ED
+opc_ED_C8 = TODO_ED
+opc_ED_C9 = TODO_ED
+opc_ED_CA = TODO_ED
+opc_ED_CB = TODO_ED
+opc_ED_CC = TODO_ED
+opc_ED_CD = TODO_ED
+opc_ED_CE = TODO_ED
+opc_ED_CF = TODO_ED
+opc_ED_D0 = TODO_ED
+opc_ED_D1 = TODO_ED
+opc_ED_D2 = TODO_ED
+opc_ED_D3 = TODO_ED
+opc_ED_D4 = TODO_ED
+opc_ED_D5 = TODO_ED
+opc_ED_D6 = TODO_ED
+opc_ED_D7 = TODO_ED
+opc_ED_D8 = TODO_ED
+opc_ED_D9 = TODO_ED
+opc_ED_DA = TODO_ED
+opc_ED_DB = TODO_ED
+opc_ED_DC = TODO_ED
+opc_ED_DD = TODO_ED
+opc_ED_DE = TODO_ED
+opc_ED_DF = TODO_ED
+opc_ED_E0 = TODO_ED
+opc_ED_E1 = TODO_ED
+opc_ED_E2 = TODO_ED
+opc_ED_E3 = TODO_ED
+opc_ED_E4 = TODO_ED
+opc_ED_E5 = TODO_ED
+opc_ED_E6 = TODO_ED
+opc_ED_E7 = TODO_ED
+opc_ED_E8 = TODO_ED
+opc_ED_E9 = TODO_ED
+opc_ED_EA = TODO_ED
+opc_ED_EB = TODO_ED
+opc_ED_EC = TODO_ED
+opc_ED_ED = TODO_ED
+opc_ED_EE = TODO_ED
+opc_ED_EF = TODO_ED
+opc_ED_F0 = TODO_ED
+opc_ED_F1 = TODO_ED
+opc_ED_F2 = TODO_ED
+opc_ED_F3 = TODO_ED
+opc_ED_F4 = TODO_ED
+opc_ED_F5 = TODO_ED
+opc_ED_F6 = TODO_ED
+opc_ED_F7 = TODO_ED
+opc_ED_F8 = TODO_ED
+opc_ED_F9 = TODO_ED
+opc_ED_FA = TODO_ED
+opc_ED_FB = TODO_ED
+opc_ED_FC = TODO_ED
+opc_ED_FD = TODO_ED
+opc_ED_FE = TODO_ED
+opc_ED_FF = TODO_ED
+
+
 
 
 ; Jump this to start to execute 8080 code. About 8080 memory position see comments at cpu_reset.
@@ -957,13 +1297,21 @@ set_memp:
 	
 ; Please see comments at cpu_leave! The same things.
 ; Just this is one jumped on, if an opcode emulation is not implemented.
-TODO = cpu_unimplemented
+TODO_BASE = cpu_unimplemented
 cpu_unimplemented:
 	TXA
 	ROR	A
 	STA	cpu_op
 	.IMPORT	return_cpu_unimplemented
 	JMP	return_cpu_unimplemented
+
+TODO_ED:
+	LDA	#$ED
+	STA	cpu_makeup
+	LDA	#0
+	STA	cpu_prefix
+	JMP	cpu_unimplemented
+
 	
 ; This is used if an opcode "dispatches" the control. Like HALT.
 ; Note: if you want to continue, you need to increment cpu_pc by your own before calling cpu_start again!
