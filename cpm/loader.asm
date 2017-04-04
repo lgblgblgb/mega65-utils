@@ -126,7 +126,7 @@ vic_clear_loop:
 	JSR	set_m65_io_mode	; restore M65 I/O mode, overwritten above (still requires fewer bytes to call this here, than the CMP/BNE above to avoid)
 	LDA	#$1B
 	STA	$D011
-	LDA	#$24
+	LDA	#$26		; WE USE THE SECOND 2K OF ROM CHRSET!!!
 	STA	$D018
 	LDA	#$C8
 	STA	$D016

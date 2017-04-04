@@ -47,34 +47,27 @@
 ; Needs CPU reset for umem_p1 initialized for bank
 .EXPORT	install_software
 .PROC	install_software
-	; Clear whole RAM, up to (but not including) BDOSPAGE
-	WRISTR	"Init checkpoints: 0"
+	WRISTR	{"Constructing CP/M memory and installing user application",13,10}
+	LDA	#.LOBYTE(I8080_BANK)
+	STA	umem_p1+2
+	LDA	#.HIBYTE(I8080_BANK)
+	STA	umem_p1+3
+	; Use DMA for most tasks
 	LDA	#0
-	TAZ
-	TAX
-clear1:
-	STX	umem_p1+1
-clear2:
-	STA32Z	umem_p1
-	INZ
-	BNE	clear2
-	INX
-	CPX	#BDOSPAGE
-	BNE	clear1
-	; Prepare "BDOS page" (fully HALTs)
-	WRISTR	"1"
-	STX	umem_p1+1
-	LDA	#HALT_OPC_8080
-fillsyspage0:
-	STA32Z	umem_p1
-	INZ
-	BNE	fillsyspage0
+	STA	umem_p1+0
+	STA	$D702
+	LDA	#.HIBYTE(dma_list)
+	STA	$D701
+	LDA	#.LOBYTE(dma_list)
+	STA	$D700			; this will start the DMA operation
 	; Prepare "BIOS page"
-	WRISTR	"2"
-	INX
-	STX	umem_p1+1
+	WRISTR	{"Installing CP/M BIOS hooks",13,10}
+	;JSR	press_a_key
+	LDA	#BIOSPAGE
+	STA	umem_p1+1
 	LDY	#$C0
-fillsyspage1:
+	LDZ	#0
+fillsyspage:
 	LDA	#JP_OPC_8080
 	STA32Z	umem_p1
 	INZ
@@ -85,49 +78,86 @@ fillsyspage1:
 	STA32Z	umem_p1
 	INZ
 	INY
-	BNE	fillsyspage1
-	LDA	#HALT_OPC_8080
-fillsyspage2:
-	STA32Z	umem_p1
-	INZ
-	BNE	fillsyspage2
-	; Prepare lower system page
-	WRISTR	"3"
-	LDA	#0
-	STA	umem_p1+1
-	TAX
-	TAZ
-fillzeropage:
-	LDA	lowpage,X
-	STA32Z	umem_p1
-	INZ
-	INX
-	CPX	#lowpage_bytes
-	BNE	fillzeropage
-	; Copy program to be executed
-	WRISTR	"4"
-	LDX	#1
-	STX	umem_p1+1
-	DEX
-	LDZ	#0
-	LDY	#.HIBYTE(__PAYLOAD_SIZE__) + 1
-uploadloop:
-	LDA	__PAYLOAD_LOAD__,X
-	STA32Z	umem_p1
-	INZ
-	INX
-	BNE	uploadloop
-	INC	umem_p1+1
-	INC	uploadloop+2
-	DEY
-	BNE	uploadloop
-	JSR	write_crlf
+	BNE	fillsyspage
 	RTS
+;	; Prepare lower system page
+;	WRISTR	"3"
+;	LDA	#0
+;	STA	umem_p1+1
+;	TAX
+;	TAZ
+;fillzeropage:
+;	LDA	lowpage,X
+;	STA32Z	umem_p1
+;	INZ
+;	INX
+;	CPX	#lowpage_bytes
+;	BNE	fillzeropage
+;	; Copy program to be executed
+;	WRISTR	"4"
+;	LDX	#1
+;	STX	umem_p1+1
+;	DEX
+;	LDZ	#0
+;	LDY	#.HIBYTE(__PAYLOAD_SIZE__) + 1
+;uploadloop:
+;	LDA	__PAYLOAD_LOAD__,X
+;	STA32Z	umem_p1
+;	INZ
+;	INX
+;	BNE	uploadloop
+;	INC	umem_p1+1
+;	INC	uploadloop+2
+;	DEY
+;	BNE	uploadloop
+;	JSR	write_crlf
+;	RTS
 lowpage:
 	.BYTE	JP_OPC_8080, 3, BIOSPAGE	; CP/M BIOS WARM boot entry point
 	.BYTE	0, 0	; I/O byte and disk byte
 	.BYTE	JP_OPC_8080, 0, BDOSPAGE	; CP/M BDOS entry point
 lowpage_bytes = * - lowpage
+dma_list:
+	; Clear the whole i8080 memory area
+	.BYTE	4|3	; DMA command, and other info, here chained + copy op
+	.WORD	MEMTOPPAGE*256	; DMA operation length, here: 62K (last 2K is C65 colour RAM for now!)
+	.WORD	0	; source addr, for fill op, the low byte is the fill value
+	.BYTE	0	; source bank + other info
+	.WORD	0	; target addr
+	.BYTE	I8080_BANK	; target bank + other info
+	.WORD	0	; modulo ... no idea, just skip it
+	; Fill BIOS page with HALTs
+	.BYTE	4|3
+	.WORD	256
+	.WORD	HALT_OPC_8080
+	.BYTE	0
+	.WORD	BIOSPAGE*256
+	.BYTE	I8080_BANK
+	.WORD	0
+	; Fill BDOS page with HALTs
+	.BYTE	4|3
+	.WORD	256
+	.WORD	HALT_OPC_8080
+	.BYTE	0
+	.WORD	BDOSPAGE*256
+	.BYTE	I8080_BANK
+	.WORD	0
+	; Copy low page
+	.BYTE	4
+	.WORD	lowpage_bytes
+	.WORD	lowpage
+	.BYTE	0
+	.WORD	0
+	.BYTE	I8080_BANK
+	.WORD	0
+	; Install our software (that is: copy)
+	.BYTE	0
+	.WORD	__PAYLOAD_SIZE__
+	.WORD	__PAYLOAD_LOAD__
+	.BYTE	0
+	.WORD	$100
+	.BYTE	I8080_BANK
+	.WORD	0
 .ENDPROC
 
 
@@ -202,14 +232,14 @@ bios_call_table:
 	.WORD	bios_unknown		; 1: WBOOT
 	.WORD	bios_2			; 2: CONST  (Returns its status in A; 0 if no character is ready, 0FFh if one is.)
 	.WORD	bios_3			; 3: CONIN  (Wait until the keyboard is ready to provide a character, and return it in A.)
-	.WORD	bios_4			; 4: CONOUT (write character in register C)
+	.WORD	bios_4			; 4: CONOUT (write character in register C to the screen)
 bios_call_table_size = (* - bios_call_table) / 2
 
 
 
 .PROC	bdos_unknown
 	WRISTR	{13,10,"*** UNKNOWN BDOS call",13,10}
-	JMP	halt
+	JMP	wboot
 .ENDPROC
 
 
@@ -229,7 +259,7 @@ bios_call_table_size = (* - bios_call_table) / 2
 	JMP	(bdos_call_table,X)
 bdos_unknown_big:
 	WRISTR	{13,10,"*** UNKNOWN BDOS call (too high)",13,10}
-	JMP	halt
+	JMP	wboot
 .ENDPROC
 
 
@@ -248,7 +278,7 @@ bios_unknown_big:
 	AND	#$3F
 	JSR	write_hex_byte
 	JSR	write_crlf
-	JMP	halt
+	JMP	wboot
 .ENDPROC
 bios_call_show_and_halt = bios_call::bios_unknown_big
 
@@ -258,14 +288,61 @@ bios_call_show_and_halt = bios_call::bios_unknown_big
 .PROC	app_main
 	JSR	init_console
 	JSR	clear_screen		; the fist call of this initiailizes console out functions
-	WRISTR	{"i8080 emulator and (re-implemented) CP/M for Mega-65 (C)2017 LGB",13,10}
+	WRISTR	{"i8080 emulator and (re-implemented) CP/M for Mega-65 (C)2017 LGB",13,10,"M65 OS/DOS versions are "}
+	LDA	#0
+	HYPERDOS
+	JSR	write_hex_byte
+	TXA
+	JSR	write_hex_byte
+	LDA	#32
+	JSR	write_char
+	TYA
+	JSR	write_hex_byte
+	TZA
+	JSR	write_hex_byte
+	JSR	write_crlf
+	CLI				; beware, interrupts are enabled :-)
+boot:
+	;WRISTR	"@ Boot, before CPU reset. "
+	;JSR	press_a_key
 	JSR	cpu_reset
+	;WRISTR	"Before install software. "
+	;JSR	press_a_key
 	JSR	install_software	; initializes i8080 CP/M memory, and "uploads" the software there we want to run
 	LDA	#1
 	STA	cpu_pch			; reset address was 0, now with high byte modified to 1, it's 0x100, the start address of CP/M programs.
+	.IMPORT	command_processor
+	JSR	command_processor
 	WRISTR	{"Entering into i8080 mode",13,10,13,10}
-	CLI				; hmmm! enable interrupts oh-oh!
+	JSR	press_a_key
 	JMP	cpu_start
+.ENDPROC
+
+
+.PROC	press_a_key
+	PHA
+	PHP
+	WRISTR	{"Press 'c' to continue.",13,10}
+:	JSR	conin_check_status
+	BNE	:-
+:	JSR	conin_get_with_wait
+	CMP	#'c'
+	BNE	:-
+	PLP
+	PLA
+	RTS
+.ENDPROC
+
+
+.PROC	wboot
+	JSR	reg_dump
+;	WRISTR	"Press 'c' to continue: "
+;wait:
+;	JSR	conin_get_with_wait
+;	CMP	#'c'
+;	BNE	wait
+	JSR	write_crlf
+	JMP	app_main::boot
 .ENDPROC
 
 
@@ -278,17 +355,17 @@ bios_call_show_and_halt = bios_call::bios_unknown_big
 	CMP	#BDOSPAGE
 	LBEQ	bdos_call
 	WRISTR	{13,10,"*** Emulation trap not on the BIOS or BDOS pages",13,10}
-	JMP	halt
+	JMP	wboot
 .ENDPROC
 
 ; i8080 emulator will jump here on "cpu_unimplemented" event
 .EXPORT	return_cpu_unimplemented
 .PROC	return_cpu_unimplemented
 	WRISTR	{13,10,"*** Unimplemented i8080 opcode",13,10}
-	JMP	halt
+	JMP	wboot
 .ENDPROC
 
-.PROC	halt
+.PROC	halt_not
 	JSR	reg_dump
 	WRISTR  {13,10,"HALTED.",13,10}
 halted:

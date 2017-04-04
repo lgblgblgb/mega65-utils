@@ -13,4 +13,5 @@ SEGMENTS {
 	BASICSTUB:	load = RAM, define = yes;
 	CODE:		load = RAM;
 	PAYLOAD:	load = RAM, define = yes;
+	BSS:		load = RAM, type = BSS;
 }

@@ -19,6 +19,7 @@
 DISK_IMAGE	= emu.d81
 PRG		= emu.prg
 PRG_ON_DISK	= emu
+MAP_FILE	= emu.map
 SOURCES		= $(shell ls *.asm)
 INCLUDES	= $(shell ls *.inc) cpu_tables.inc
 OBJECTS		= $(SOURCES:.asm=.o)
@@ -34,7 +35,7 @@ XEMU_OPTS	= -8 $(DISK_IMAGE) -kickup $(KICKUP) -sdimg $(SDIMG) -kicked 255
 KICKUP_URL	= http://github.lgb.hu/xemu/files/KICKUP.M65
 SDIMG_URL	= http://github.lgb.hu/xemu/files/sd-card-image-for-xemu-xmega65.img.gz
 CA65_OPTS	= -t none
-LD65_OPTS	= -C $(LD65_CFG)
+LD65_OPTS	= -C $(LD65_CFG) -m $(MAP_FILE) -vm
 
 XEMU_M65	= xemu-xmega65
 ETHERLOAD	= mega65-etherload
@@ -94,7 +95,7 @@ $(XEMU_SNAPSHOT):
 	$(XEMU_M65) $(XEMU_OPTS) -snapsave $(XEMU_SNAPSHOT)
 
 clean:
-	$(RM) -f $(PRG) *.o $(DISK_IMAGE) uart.sock dump.mem $(DEBUG_LOG) $(SDIMG_GZ) cpu_tables.inc
+	$(RM) -f $(PRG) *.o $(DISK_IMAGE) uart.sock dump.mem $(DEBUG_LOG) $(SDIMG_GZ) cpu_tables.inc $(MAP_FILE)
 
 $(KICKUP):
 	$(WGET) -O $@ $(KICKUP_URL)
