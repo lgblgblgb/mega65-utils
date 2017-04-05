@@ -202,31 +202,128 @@ normal_char:
 	INX
 	BNE	input_loop
 return_char:
+	LDA	#32
+	CMP	cli_buffer-1,X
+	BNE	last_char_is_not_space
+	DEX				; filter out unneeded trailing space
+last_char_is_not_space:
 	LDA	#0
 	STA	cli_buffer,X		; store a null terminator in the buffer for easier processing later
 	JSR	write_crlf
-	; Start to eval the command
-	LDA	cli_buffer
-	CMP	#'b'
-	BEQ	command_b
-	CMP	#'j'
-	BEQ	command_j
-	CMP	#'r'
-	BEQ	command_r
-	CMP	#'m'
-	LBEQ	command_m
-	CMP	#'x'
-	LBEQ	command_x
-	WRISTR	{"?Bad command.",13,10}
+	JSR	search_command
+	BMI	bad_command
+	TAY
+	LDA	cmdjumps_lo,Y
+	STA	ja
+	LDA	cmdjumps_hi,Y
+	STA	ja+1
+	ja = * + 1
+	JMP	$8888
+bad_command:
+	WRISTR	{"?Bad command. Use 'help'.",13,10}
 	JMP	shell_loop
-command_r:
-	JSR	reg_dump
-	JMP	shell_loop
-command_b:
-	LDX	#1
-	JSR	skip_spaces_in_cli_buffer
+.ENDPROC
+
+
+
+; Output:
+;	A = command number (negative if does not found), sign flag is set by this
+;	X = cli_buffer position of possible param (C=1) or invalid when no param (C=0)
+.PROC	search_command
+	LDZ	#$FF				; command number counter (bits 0-6), comparsion failed signal (bit7=1)
+	LDY	#$FF				; pointer in cmdnames table
+cmd_search_loop:
+	TZA
+	INA					; next command for command counter
+	AND	#$7F				; clear comparsion failed signal for the current command to be checked
+	TAZ
+	LDX	#$FF				; cli_buffer pointer
+cmd_compare_loop:
+	INX
+	INY
+	LDA	cmdnames,Y
+	BEQ	cmd_not_found			; end of command names table, if we hit this point, we haven't found matching command, return!
+	BMI	cmd_last_char_of		; command table contains bit7 set for the last char of each commands
+	CMP	cli_buffer,X			; compare table with cli_buffer
+	BEQ	cmd_compare_loop		; if match, continue
+	TZA					; if doesn't match, set bit7 of Z, but still continue, for properly found the end of the table entry later
+	ORA	#$80
+	TAZ
+	BNE	cmd_compare_loop		; =JMP here, always taken!
+cmd_last_char_of:
+	CPZ	#0				; here CPZ only used to check its bit7 without messing up accu (TZA wouldn't be a good idea, thus)
+	BMI	cmd_search_loop
+	AND	#$7F
+	CMP	cli_buffer,X
+	BNE	cmd_search_loop
+	LDA	cli_buffer+1,X
+	BEQ	cmd_found_with_no_param
+	CMP	#32
+	BNE	cmd_search_loop
+	; So command found with a parameter
+	INX					; move cli_buffer pointer to the parameter
+	INX
+	SEC
+	TZA
+	RTS
+cmd_found_with_no_param:
+	CLC
+	TZA
+	RTS
+cmd_not_found:
+	LDA	#$FF
+	RTS
+.ENDPROC
+
+
+
+.PROC	dump_help
+	LDY	#0
+	LDX	#0
+	LDA	#.HIBYTE(cmdhelps)
+	STA	loop_help+2	; self-mod!!
+main_loop:
+	WRISTR	"  "
+loop_cmd_name:
+	LDA	cmdnames,Y
+	LBEQ	write_crlf	; end
+	INY
+	TAZ
+	AND	#$7F
+	JSR	write_char
+	TZA
+	BPL	loop_cmd_name
+	WRISTR	" : "
+loop_help:
+	LDA	cmdhelps,X
+	INX
+	BNE	:+
+	INC	loop_help+2	; self-mod!!
+:	TAZ
+	AND	#$7F
+	JSR	write_char
+	TZA
+	BPL	loop_help
+	JSR	write_crlf
+	JMP	main_loop
+.ENDPROC
+
+
+.PROC	error_no_param
+	WRISTR	{"?Parameter missing.",13,10}
+	JMP	command_processor::shell_loop
+.ENDPROC
+.PROC	error_bad_param
+	WRISTR	{"?Bad parameter.",13,10}
+	JMP	command_processor::shell_loop
+.ENDPROC
+
+
+
+.PROC	command_bank
+	BCC	error_no_param
 	JSR	get_hex_from_cli_buffer
-	LBEQ	shell_loop
+	BEQ	error_bad_param
 	WRISTR	"Dump bank is set to "
 	LDA	hex_input+1
 	AND	#$F
@@ -236,12 +333,35 @@ command_b:
 	STA	memdump_addr+2
 	JSR	write_hex_byte
 	JSR	write_crlf
-	JMP	shell_loop
-command_j:
-	LDX	#1
-	JSR	skip_spaces_in_cli_buffer
+	JMP	command_processor::shell_loop
+.ENDPROC
+.PROC	command_exit
+	RTS
+.ENDPROC
+.PROC	command_help
+	JSR	dump_help
+	JMP	command_processor::shell_loop
+.ENDPROC
+.PROC	command_mem
+	BCC	no_param
 	JSR	get_hex_from_cli_buffer
-	LBEQ	shell_loop
+	BEQ	error_bad_param
+	LDA	hex_input
+	STA	memdump_addr
+	LDA	hex_input+1
+	STA	memdump_addr+1
+no_param:
+	JSR	memdump
+	JMP	command_processor::shell_loop
+.ENDPROC
+.PROC	command_regs
+	JSR	reg_dump
+	JMP	command_processor::shell_loop
+.ENDPROC
+.PROC	command_setpc
+	LBCC	error_no_param
+	JSR	get_hex_from_cli_buffer
+	BEQ	error_bad_param
 	WRISTR	"8080 PC is set to "
 	LDA	hex_input+1
 	STA	cpu_pch
@@ -250,18 +370,43 @@ command_j:
 	STA	cpu_pcl
 	JSR	write_hex_byte
 	JSR	write_crlf
-	JMP	shell_loop
-command_m:
-	LDX	#1				; position after one letter command in cli-buffer
-	JSR	skip_spaces_in_cli_buffer	; skip possible space
-	JSR	get_hex_from_cli_buffer		; read hex value
-	BEQ	:+				; zero bit is set, if no hex val could read at all
-	LDA	hex_input
-	STA	memdump_addr
-	LDA	hex_input+1
-	STA	memdump_addr+1
-:	JSR	memdump
-	JMP	shell_loop
-command_x:
-	RTS
+	JMP	command_processor::shell_loop
 .ENDPROC
+
+
+; Jump table for the given commands
+; Order must be the same as with "cmdnames"
+cmdjumps_lo:
+	.LOBYTES	command_bank
+	.LOBYTES	command_exit
+	.LOBYTES	command_help
+	.LOBYTES	command_mem
+	.LOBYTES	command_regs
+	.LOBYTES	command_setpc
+cmdjumps_hi:
+	.HIBYTES	command_bank
+	.HIBYTES	command_exit
+	.HIBYTES	command_help
+	.HIBYTES	command_mem
+	.HIBYTES	command_regs
+	.HIBYTES	command_setpc
+; Must be table of help messages for the given commands.
+; Last char for each help msgs is bit7 set. No need for table termination.
+; Order must be the same as with "cmdnames"
+cmdhelps:
+	.BYTE	"Set bank for mem cm", 'd'|128		; command "bank"
+	.BYTE	"Exit shell, star", 't'|128		; command "exit"
+	.BYTE	"You read tha",'t'|128			; command "help"
+	.BYTE	"Dump memor", 'y'|128			; command "mem"
+	.BYTE	"Show i8080 register",'s'|128		; command "regs"
+	.BYTE	"Set i8080 P",'C'|128			; command "setpc"
+; This table cannot be larger than 256 bytes!
+; Last char for each cmd is bit7 set. Zero termination.
+cmdnames:
+	.BYTE	"ban",'k'|128
+	.BYTE	"exi",'t'|128
+	.BYTE	"hel",'p'|128
+	.BYTE	"me",'m'|128
+	.BYTE	"reg",'s'|128
+	.BYTE	"setp",'c'|128
+	.BYTE	0
