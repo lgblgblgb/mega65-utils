@@ -42,6 +42,10 @@
 	;.INCBIN "8080/wow.com"
 	.INCBIN "8080/mbasic-real.com"
 
+.ZEROPAGE
+
+checksum_test:	.RES 4
+
 .CODE
 
 ; Needs CPU reset for umem_p1 initialized for bank
@@ -61,8 +65,6 @@
 	LDA	#.LOBYTE(dma_list)
 	STA	$D700			; this will start the DMA operation
 	; Prepare "BIOS page"
-	WRISTR	{"Installing CP/M BIOS hooks",13,10}
-	;JSR	press_a_key
 	LDA	#BIOSPAGE
 	STA	umem_p1+1
 	LDY	#$C0
@@ -79,39 +81,38 @@ fillsyspage:
 	INZ
 	INY
 	BNE	fillsyspage
+	; This is some kind of check only. We makes checksum of the I8080 memory area to compare Xemu and M65 board ...
+	LDZ	#0
+	LDX	#0
+	STZ	checksum_test
+	STZ	checksum_test+1
+	STZ	checksum_test+2
+	STZ	checksum_test+3
+	CLC				; initial well-defined carry value, during the checksum we don't care about carry between dwords though
+do_checksum:
+	STX	umem_p1+1
+	LDY	#3
+checksum_bytes:
+	LDA	checksum_test,Y
+	ADC32Z	umem_p1
+	INZ
+	STA	checksum_test,Y
+	DEY
+	BPL	checksum_bytes
+	TZA				; this will set flags according to 'Z', so we don't need to use CPZ
+	BNE	do_checksum
+	INX
+	CPX	#MEMTOPPAGE
+	BNE	do_checksum
+	WRISTR	"Checksum for prepared memory is "
+	LDY	#3
+checksum_printing:
+	LDA	checksum_test,Y
+	JSR	write_hex_byte
+	DEY
+	BPL	checksum_printing
+	JSR	write_crlf
 	RTS
-;	; Prepare lower system page
-;	WRISTR	"3"
-;	LDA	#0
-;	STA	umem_p1+1
-;	TAX
-;	TAZ
-;fillzeropage:
-;	LDA	lowpage,X
-;	STA32Z	umem_p1
-;	INZ
-;	INX
-;	CPX	#lowpage_bytes
-;	BNE	fillzeropage
-;	; Copy program to be executed
-;	WRISTR	"4"
-;	LDX	#1
-;	STX	umem_p1+1
-;	DEX
-;	LDZ	#0
-;	LDY	#.HIBYTE(__PAYLOAD_SIZE__) + 1
-;uploadloop:
-;	LDA	__PAYLOAD_LOAD__,X
-;	STA32Z	umem_p1
-;	INZ
-;	INX
-;	BNE	uploadloop
-;	INC	umem_p1+1
-;	INC	uploadloop+2
-;	DEY
-;	BNE	uploadloop
-;	JSR	write_crlf
-;	RTS
 lowpage:
 	.BYTE	JP_OPC_8080, 3, BIOSPAGE	; CP/M BIOS WARM boot entry point
 	.BYTE	0, 0	; I/O byte and disk byte
