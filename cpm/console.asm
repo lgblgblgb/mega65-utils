@@ -71,38 +71,6 @@ kbd_queued:	.RES 1
 	LDA	#.LOBYTE(dma_list)
 	STA	$D700		; starts the DMA!
 	RTS
-
-	PHP
-	SEI
-	LDA	#1
-	TSB	$D030		; switch on full 2K colour RAM
-	LDA	#$08
-	STA	vhi
-	LDA	#$D8
-	STA	chi
-	LDA	#32
-	LDX	#0
-	STX	cursor_x
-	STX	cursor_y
-	LDY	#8
-	LDZ	#TEXT_COLOUR
-loop:
-	vhi = * + 2
-	STA	$0800,X
-	chi = * + 2
-	STZ	$D800,X
-	INX
-	BNE	loop
-	INC	vhi
-	INC	chi
-	DEY
-	BNE	loop
-	LDA	#1
-	TRB	$D030		; OK, release colour RAM, so CIA1/CIA2 can be seen again
-	LDA	#15
-	STA	4088		; sprite shape
-	PLP
-	RTS
 dma_list:
 	; First DMA entry, clear the screen
 	.BYTE	4|3	; DMA command, and other info (chained, op is 3, which is fill)
@@ -270,32 +238,6 @@ scroll:
 	STA	$D701
 	LDA	#.LOBYTE(scroll_dma_list)
 	STA	$D700	; this actually starts the DMA operation
-;	LDX	#0
-;scroll0:
-;	LDA	$850,X
-;	STA	$800,X
-;	LDA	$950,X
-;	STA	$900,X
-;	LDA	$A50,X
-;	STA	$A00,X
-;	LDA	$B50,X
-;	STA	$B00,X
-;	LDA	$C50,X
-;	STA	$C00,X
-;	LDA	$D50,X
-;	STA	$D00,X
-;	LDA	$E50,X
-;	STA	$E00,X
-;	LDA	$F50,X
-;	STA	$F00,X
-;	INX
-;	BNE	scroll0
-;	LDA	#32
-;scroll1:
-;	STA	$F80,X
-;	INX
-;	CPX	#80
-;	BNE	scroll1
 	; end of scrolling of screen
 	PLX
 	RTS
@@ -378,8 +320,14 @@ cp0:
 	STA	$FFFE
 	LDA	#>irq_handler
 	STA	$FFFF
+	; Set NMI handler
+	LDA	#<nmi_handler
+	STA	$FFFA
+	LDA	#>nmi_handler
+	STA	$FFFB
+	; Enable raster interrupt
 	LDA	#1
-	STA	$D01A	; enable raster interrupt
+	STA	$D01A
 	; Sprite
 	LDX	#0
 sprite_shaper1:
@@ -575,7 +523,6 @@ valid_key:
 	; Update cursor position (we use a sprite as a cursor, updated in IRQ handler always)
 	LDA	cursor_x
 	LDY	#0
-;	TAX
 	ASL	A
 	ASL	A
 	BCC	:+
@@ -583,10 +530,6 @@ valid_key:
 	INY
 :	ADC	#24
 	STA	$D000	; sprite-0 X coordinate
-;	TXA
-;	CMP	#51
-;	LDA	#0
-;	ADC	#0
 
 	TYA
 	ADC	#0
@@ -606,6 +549,12 @@ valid_key:
 	PLX
 	PLA
 	ASL	$D019	; acknowledge VIC interrupt (note: it wouldn't work on a real C65 as RMW opcodes are different but it does work on M65 as on C64 too!)
+	RTI
+.ENDPROC
+
+
+.PROC	nmi_handler
+	INC	$D021
 	RTI
 .ENDPROC
 

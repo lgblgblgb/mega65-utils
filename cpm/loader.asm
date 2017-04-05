@@ -100,6 +100,14 @@ stub_main:
 	STX	1		; default "C64 style" memory configutation
 	JSR	set_c65_io_mode	; for accessing $D030, since we are not sure if it's M65, we use C65 I/O mode only, not M65 yet!
 	EOM
+	STZ	$D030		; VIC-III ROM mapping turned off
+
+	LDA	#$7F
+	STA	$DC0D
+	STA	$DD0D
+	LDA	$DC0D		; for ACK'ing possible pending CIA int?
+	LDA	$DD0D		; the same for other CIA
+
 	; Check hypervisor
 	JSR	set_m65_io_mode	; We need M65 I/O mode for this ...
 	TZA			; A:=$00
@@ -111,12 +119,11 @@ stub_main:
 	; Try a "software reset" as exit ... (with C64's RAM, it will drop into C65 mode if no reason found to stay in C64 mode, the normal C65 boot-up process btw)
 soft_reset:
 	JSR	set_c65_io_mode
-	STZ	$D030		; turn VIC-III ROM mappings (Z=0!), what may be active (which overrides all other memory mapping methods). For this, we need at least C65 I/O mode
 	JMP	($FFFC)		; execute std reset vector stuff from ("C64") ROM
 hypervisor_ok:
 	; At this point, we identified a working M65, in M65 (!) I/O mode, though the memory configuration
 	; it like C64, with RAM, KERNAL(C64)L+BASIC(C64)+I/O(M65!!) mapped
-	LDX	#$7F
+	;LDX	#$7F
 	LDX	#$2E		; TODO!!!! REMOVE FIXME!!
 vic_clear_loop:
 	STZ	$D000,X		; reset Xth VIC4 register (at $2F, it will reset I/O mode, btw)

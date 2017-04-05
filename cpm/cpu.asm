@@ -413,7 +413,7 @@ NO_OP	= next_inc1
 ; big data tables for flags, etc, if it helps to gain speed!
 ; After all, the goal it to have "okey" speed of 8080 emulation
 ; for CP/M and such running on the M65, it does not help too much
-; if the emulated 8080 runs like a 8080 locked on 10KHz or such ...
+; if the emulated 8080 runs like a 8080 clocked on 10KHz or such ...
 
 opcode_jump_table:
 	.WORD opc_00,opc_01,opc_02,opc_03,opc_04,opc_05,opc_06,opc_07,opc_08,opc_09,opc_0A,opc_0B,opc_0C,opc_0D,opc_0E,opc_0F
