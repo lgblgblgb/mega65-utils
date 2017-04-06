@@ -42,6 +42,8 @@ string_p:	.RES 2
 cursor_x:	.RES 1
 cursor_y:	.RES 1
 cursor_blink_counter:	.RES 1
+
+
 kbd_last:	.RES 1
 kbd_queued:	.RES 1
 
@@ -58,37 +60,34 @@ kbd_queued:	.RES 1
 ; Currently we don't handle colours etc anything, but full colour RAM anyway with a consistent colour
 .EXPORT	clear_screen
 .PROC	clear_screen
-	PHP
-	SEI
-	LDA	#1
-	TSB	$D030		; switch on full 2K colour RAM
-	LDA	#$08
-	STA	vhi
-	LDA	#$D8
-	STA	chi
-	LDA	#32
-	LDX	#0
-	STX	cursor_x
-	STX	cursor_y
-	LDY	#8
-	LDZ	#TEXT_COLOUR
-loop:
-	vhi = * + 2
-	STA	$0800,X
-	chi = * + 2
-	STZ	$D800,X
-	INX
-	BNE	loop
-	INC	vhi
-	INC	chi
-	DEY
-	BNE	loop
-	LDA	#1
-	TRB	$D030		; OK, release colour RAM, so CIA1/CIA2 can be seen again
+	LDA	#0
+	STA	cursor_x
+	STA	cursor_y
+	STA	$D702		; DMA list bank addr
 	LDA	#15
-	STA	4088		; sprite shape
-	PLP
+	STA	4088		; cursor shape
+	LDA	#.HIBYTE(dma_list)
+	STA	$D701
+	LDA	#.LOBYTE(dma_list)
+	STA	$D700		; starts the DMA!
 	RTS
+dma_list:
+	; First DMA entry, clear the screen
+	.BYTE	4|3	; DMA command, and other info (chained, op is 3, which is fill)
+	.WORD	80*25	; DMA operation length
+	.WORD	32	; source addr, NOTE: in case of FILL op (now!) this is not an address, but low byte is the fill value!! (space character now)
+	.BYTE	0	; source bank + other info
+	.WORD	$800	; target addr
+	.BYTE	0	; target bank + other info
+	.WORD	0	; modulo ... no idea, just skip it
+	; Second DMA entry, init the colour RAM: we access colour RAM by DMA at the C65 position, we don't need to enable full 2K colour RAM in the I/O area
+	.BYTE	3
+	.WORD	80*25
+	.WORD	TEXT_COLOUR
+	.BYTE	0
+	.WORD	$F800	; C65 colour RAM addr
+	.BYTE	1	; C65 colour RAM bank
+	.WORD	0
 .ENDPROC
 
 
@@ -239,32 +238,6 @@ scroll:
 	STA	$D701
 	LDA	#.LOBYTE(scroll_dma_list)
 	STA	$D700	; this actually starts the DMA operation
-;	LDX	#0
-;scroll0:
-;	LDA	$850,X
-;	STA	$800,X
-;	LDA	$950,X
-;	STA	$900,X
-;	LDA	$A50,X
-;	STA	$A00,X
-;	LDA	$B50,X
-;	STA	$B00,X
-;	LDA	$C50,X
-;	STA	$C00,X
-;	LDA	$D50,X
-;	STA	$D00,X
-;	LDA	$E50,X
-;	STA	$E00,X
-;	LDA	$F50,X
-;	STA	$F00,X
-;	INX
-;	BNE	scroll0
-;	LDA	#32
-;scroll1:
-;	STA	$F80,X
-;	INX
-;	CPX	#80
-;	BNE	scroll1
 	; end of scrolling of screen
 	PLX
 	RTS
@@ -284,7 +257,7 @@ scroll_dma_list:	; DMA list for scolling
 	; Second DMA entry (last) to erase bottom line
 	.BYTE	3	; DMA command, and other info (not chained so last, op is 3, which is fill)
 	.WORD	80	; DMA operation length
-	.WORD	32	; source addr, NOTE: in case of FILL op (now!) this is not an address, but low byte is the fill value!!
+	.WORD	32	; source addr, NOTE: in case of FILL op (now!) this is not an address, but low byte is the fill value!! (space character now)
 	.BYTE	0	; source bank + other info
 	.WORD	$F80	; target addr
 	.BYTE	0	; target bank + other info
@@ -308,7 +281,6 @@ scroll_dma_list:	; DMA list for scolling
 	; We use charset "WOM" @ $0FF7 Exxx of M65 directly via linear addressing
 	; to submit new charset based on "sliced" original one from C64 ROM
 	; Since WOM is "write-only" memory, we need a source, that is C64 charset ROM.
-	; *NOTE: umem_p1 *CANNOT* be used after cpu_reset
 	LDA	#$F7
 	STA	umem_p1+2
 	LDA	#$0F
@@ -318,7 +290,7 @@ scroll_dma_list:	; DMA list for scolling
 	STZ	umem_p1
 cp0:
 	; ***
-	LDY	#$E0
+	LDY	#$E8		; we use the SECOND 2K of CHR-WOM! So in case of reset, M65 will not display garbage, as it uses the first charset (uppercase+gfx)
 	STY	umem_p1+1
 	LDA	#$FF
 	STA32Z	umem_p1		; well, that's only for making sure chars 0-31 are "blank" to catch problems, etc?
@@ -348,8 +320,14 @@ cp0:
 	STA	$FFFE
 	LDA	#>irq_handler
 	STA	$FFFF
+	; Set NMI handler
+	LDA	#<nmi_handler
+	STA	$FFFA
+	LDA	#>nmi_handler
+	STA	$FFFB
+	; Enable raster interrupt
 	LDA	#1
-	STA	$D01A	; enable raster interrupt
+	STA	$D01A
 	; Sprite
 	LDX	#0
 sprite_shaper1:
@@ -420,25 +398,27 @@ sprite_shaper2:
 
 ; Keyboard scan codes to ASCII table.
 ; some keys are handled as control keys with de-facto standard value, eg RETURN = 13
-; key positions with 0 values are not handled. Key value 128 means the shift keys
+; key positions with 0 values are not handled
 scan2ascii:
 	.BYTE	8,13,0,0,0,0,0,0
-	.BYTE	"3wa4zse",128
+	.BYTE	"3wa4zse",0
 	.BYTE	"5rd6cftx"
 	.BYTE	"7yg8bhuv"
 	.BYTE	"9ij0mkon"
 	.BYTE	"+pl-.:@,"
-	.BYTE	"#*;",0,128,"=^/"
-	.BYTE	"1",0,0,"2 ",0,"q",0
-	; Shifted versions of the keys (here, shift keys must be unhandled!!!)
-	.BYTE	0,0,0,0,0,0,0,0
-	.BYTE	"3WA4ZSE",0
-	.BYTE	"5RD6CFTX"
-	.BYTE	"7YG8BHUV"
-	.BYTE	"9IJ0MKON"
-	.BYTE	"+PL-.:@,"
 	.BYTE	"#*;",0,0,"=^/"
-	.BYTE	"1",0,0,"2 ",0,"Q",0
+	.BYTE	"1",0,0,"2 ",0,"q",0
+	; Shifted versions of the keys
+	.BYTE	0,0,0,0,0,0,0,0
+	.BYTE	"#WA$ZSE",0
+	.BYTE	"%RD&CFTX"
+	.BYTE	"'YG(BHUV"
+	.BYTE	")IJ0MKON"
+	.BYTE	"+PL->[@<"
+	.BYTE	"#*]",0,0,"=^?"
+	.BYTE	"!",0,0,34," ",0,"Q",0
+	; Just a byte zero, but it's needed to be here!
+	.BYTE	0
 	
 
 
@@ -468,57 +448,67 @@ return:
 	PHZ
 	; Scan the keyboard, use key buffer to store result, etc ...
 	; TODO: Keyboard scanning does not need to be done maybe at every VIC frame though ...
+	; This keyboard scanning madness is my idea :D
 	.SCOPE
-	LDX	#0
-	STX	kbd_pressed
+	LDX	#$80
+	STX	kbd_scan_pressed_now	; this will hold the final result of scan in scancode. if the number is negative (any negative), no key is pressed
 	STA	$DC00
 	LDA	$DC01
 	INA
-	BEQ	not_any
-	LDA	#$FE		; start the outer loop, X=0 already
-scan1:
+	BEQ	scan_not_any
+	LDX	#0		; this shows the current scan code to check
+	STX	kbd_shift_pressed_now
+	LDA	#$FE		; row selection for $DC00, will be ROL'ed at the end of the main loop
+scan_loop_1:
 	STA	$DC00
 	TAY
 	LDA	$DC01
-	CMP	#$FF
-	BEQ	no_key_here
+	INA
+	BEQ	scan_no_key_here	; skip the whole row, if read data was $FF (no key pressed at all)
+	DEA
 	LDZ	#8
-scan2:
-	LSR	A
-	BCS	not_this_key
-	PHA				; BEGIN: a given key is found to be pressed
-	LDA	scan2ascii,X		; translate keycode to ASCII (or some other info ...)
-	BEQ	key_unhandled		; we don't want to handle this key
-	BPL	key_handled
-	TXA
-	ORA	#64
-	TAX
-	JMP	key_unhandled
-key_handled:
-	STA	kbd_pressed
-key_unhandled:
-	PLA				; END: a given key is found to be pressed
-not_this_key:
+scan_loop_2:
+	LSR	A			; test for each keys in the row
+	BCS	scan_not_this_key
+	CPX	#52
+	BEQ	scan_key_is_shift
+	CPX	#15
+	BEQ	scan_key_is_shift
+	STX	kbd_scan_pressed_now	; store scan code of the pressed key, if it's not shift
+	JMP	scan_not_this_key
+scan_key_is_shift:
+	PHA
+	LDA	#$40
+	STA	kbd_shift_pressed_now	; set shift flag on
+	PLA
+scan_not_this_key:
 	INX
 	DEZ
-	BNE	scan2
-	BEQ	was_key_here
-no_key_here:
+	BNE	scan_loop_2
+	BEQ	scan_was_key_here
+scan_no_key_here:
 	TXA
 	CLC
 	ADC	#8
 	TAX
-was_key_here:
+scan_was_key_here:
 	TYA
 	SEC		; this will be the new bit0 (1)
 	ROL	A
-	BCS	scan1
-not_any:
+	BCS	scan_loop_1
+scan_not_any:
 	; Ok, diagnostize the result, we have kbd_modkeys for key modifiers, and kbd_pressed for the pressed non-modifier key
-	kbd_pressed = * + 1
+	kbd_scan_pressed_now = * + 1	; eeeeehmm, self modification :)
 	LDA	#0
+	kbd_shift_pressed_now = * + 1	; the bad habit of self modification still goes on :)
+	ORA	#0
+	BPL	valid_key
+	LDA	#128	; in case of no key is pressed, we set 128, which should hold a zero byte in scan2ascii table
+valid_key:
+	TAX
+	LDA	scan2ascii,X	; After this op, in accu: finally ... we have ASCII code result ... 0 means no key (or not a handled key at least) pressed!
 	JSR	update_keyboard
-no_scan:
+;no_scan:
 	.ENDSCOPE
 	; TODO: simple audio events like "bell" (ascii code 7)?
 	; Cursor blink stuff
@@ -532,16 +522,19 @@ no_scan:
 	STA	$D015	; enable
 	; Update cursor position (we use a sprite as a cursor, updated in IRQ handler always)
 	LDA	cursor_x
-	TAX
+	LDY	#0
 	ASL	A
 	ASL	A
+	BCC	:+
 	CLC
-	ADC	#24
+	INY
+:	ADC	#24
 	STA	$D000	; sprite-0 X coordinate
-	TXA
-	CMP	#51
-	LDA	#0
+
+	TYA
 	ADC	#0
+
+
 	STA	$D010	; 8th bit stuff
 	LDA	cursor_y
 	ASL	A
@@ -556,6 +549,12 @@ no_scan:
 	PLX
 	PLA
 	ASL	$D019	; acknowledge VIC interrupt (note: it wouldn't work on a real C65 as RMW opcodes are different but it does work on M65 as on C64 too!)
+	RTI
+.ENDPROC
+
+
+.PROC	nmi_handler
+	INC	$D021
 	RTI
 .ENDPROC
 
