@@ -62,8 +62,8 @@ loop:
 	STA	$7FF + 2,X
 	INX
 	BNE	loop
-	INC	loop + 2
-	INC	loop + 5
+	INC	loop + 2	; ugly self-mod for LDA addr hi byte above
+	INC	loop + 5	; ugly self-mod for STA addr hi byte above
 	DEY
 	BNE	loop
 	LDA	#64
@@ -102,9 +102,9 @@ loop:
 	TYS		; stack page is page-1
 
 	LDA	#65
-	STA	0	; hopefully this does not do too much on a C65, on M65 it enables the forced_fast stuff
+	STA	0	; M65 force fast. On C65 it doesn't do a sane op though, and also messes the CPU I/O port DDR reg up
 	LDA	#7	; CPU I/O port
-	STA	0
+	STA	0	; set DDR, also fixes the situation on C65
 	STA	1	
 
 	STZ	$D016
@@ -113,6 +113,7 @@ loop:
 	STA	$D031
 
 	; Now calling functions from C64 KERNAL, would be used otherwise too in case of RESET
+	; TODO: I am not sure these routines won't mess I/O mode up with reseting to VIC-II I/O mode?
 	JSR	$FDA3       ; initialise I/O
 	JSR	$FD50       ; initialise memory
 	JSR	$FD15       ; set I/O vectors ($0314..$0333) to kernal defaults
@@ -126,16 +127,13 @@ loop:
 	TXS
 
 	; Ugly trick: put "RUN" (+RETURN) into the keybuffer, so BASIC will execute our command ...
-	LDA	#4
-	STA	$C6	; keyboard buffer length
-	LDA	#'R'
-	STA	$277
-	LDA	#'U'
-	STA	$278
-	LDA	#'N'
-	STA	$279
-	LDA	#13
-	STA	$27A
+	LDX	#4
+	STX	$C6
+fillkbdbuf:
+	LDA	command-1,X
+	STA	$277-1,X
+	DEX
+	BNE	fillkbdbuf
 
 	; Copy the copier ...
 	LDX	#.LOBYTE(__CASBUFF_SIZE__)
@@ -145,9 +143,11 @@ copy:
 	DEX
 	BNE	copy
 
-	LDX	#0
-	LDY	#.LOBYTE($10000 - __PAYLOAD_LOAD__)	; ehm, really no need to copy this much of pages anyway :-O
+	; X is zero now
+	LDY	#.HIBYTE($10000 - __PAYLOAD_LOAD__)	; ehm, really no need to copy this much of pages anyway :-O
 	SEI
 	STX	1	; all RAM config!! (X=0)
 	JMP	copy_relocated	; (X and Y must be set)
+command:
+	.BYTE	"RUN", 13
 .ENDPROC
