@@ -7,4 +7,7 @@ first. For more details, see c65izer.asm comments
 
 c65izer as a binary is also included.
 
+equinoxe-c64 is a PSID file converted with PSID64, which is used to test
+this utility with, simply.
+
 WARNING: extremely ugly ...

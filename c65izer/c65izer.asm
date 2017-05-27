@@ -146,8 +146,8 @@ copy:
 	BNE	copy
 
 	LDX	#0
-	LDY	#.LOBYTE($1000 - __PAYLOAD_LOAD__)
+	LDY	#.LOBYTE($10000 - __PAYLOAD_LOAD__)	; ehm, really no need to copy this much of pages anyway :-O
 	SEI
-	STX	1	; all RAM config!!
+	STX	1	; all RAM config!! (X=0)
 	JMP	copy_relocated	; (X and Y must be set)
 .ENDPROC
