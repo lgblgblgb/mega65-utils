@@ -1,0 +1,82 @@
+SDCARD_A65_SELF: .INCLUDE "mcpi.i65"
+
+.CODE
+
+
+; ********************************
+; Read sector into the sector buffer, sector number is in sector address registers already
+; Input: (sector address registers with sector number)
+; Output: 
+;		Carry is clear: OK, sector is read
+;		Carry is set: some error!
+; Registers destroyed: NONE!
+; ***************************
+.PROC	sdcard_read_selected_sector
+	PHA
+	LDA	#2	; read sector command
+	STA	IO_SD_CMD
+	; Wait till busy
+	LDA	IO_SD_STATUS
+	; Check  error status
+
+wait_for_read_data:
+	LDA	IO_SD_BYTES_READ		; TODO: in KS, there is a question, why this should be read!
+	LDA	IO_SD_BYTES_READ+1
+	CMP	#2
+	BNE	wait_for_read_data
+	PLA
+	CLC
+	RTS
+.ENDPROC
+
+
+
+; *********************
+; Probe SD-card size (this is an ugly probing scheme with binary search, which is kinda easy in case of a binary number anyway)
+; Input: -
+; Output: Carry is set in case of error
+;         Carry is clear if OK, then SD card sector address registers contain the last valid sector number
+; Registers destroyed: MAYBE ALL
+; ********************* 
+
+
+.PROC	sdcard_probe_size
+	LDA	#$FF	; initialize sector address regs with all $FF
+	TAZ		; bit counter for the final check
+	TAX		; we also use this as for X start value
+init:
+	INX
+	STA	IO_SD_SECTOR_ADDRESS,X
+	CMP	#3
+	BNE	init
+	; So we have X = 3 now (we need this!): test starts at sector addr reg byte #3 (MSB)
+search_outer:
+	LDA	#$7F			; A holds a bit mask during our test, with a single bit being '0', all others are '1' (reset mask), starting with bit7
+search:
+	JSR	sdcard_read_selected_sector
+	BCC	found_size
+	INZ
+	; flip address bit to zero
+	TAY				; "save" A
+	AND	IO_SD_SECTOR_ADDRESS,X	; X holds the register offset
+	STA	IO_SD_SECTOR_ADDRESS,X
+	TYA				; "restore" A
+	; next address bit to test
+	ROR	A			; carry still contains '1' before this (by the JSR, since BCC case is handled there), so it's quite OK: new bit appearing at left will be '1'
+	BCS	search			; if original bit0 moved to carry was set, we have remaing bits to test, so do it!
+	; we have to move to the next byte!
+	DEX
+	BPL	search_outer
+	; ERROR, this should not happen! This would need we hit bit zero of address and still not readable
+error:
+	SEC				; set error signal
+found_size:				; normal exit, as it jumps here with BCC, that case would produce Carry unset, so everything is OK
+	INZ
+	BEQ	error			; this wants to check if result is not insane (ie, all bits still set 1)
+	RTS
+.ENDPROC
+
+
+
+
+
