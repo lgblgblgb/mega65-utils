@@ -1,24 +1,61 @@
 SDCARD_A65_SELF: .INCLUDE "mcpi.i65"
 
+.ZEROPAGE
+
+sd_card_sector:	.RES 4
+
 .CODE
 
 
 ; ********************************
-; Read sector into the sector buffer, sector number is in sector address registers already
-; Input: (sector address registers with sector number)
+; Read sector
+; Input: sector NUMBER (regardless of SDHC or not!) is in sd_card_sector
 ; Output: 
 ;		Carry is clear: OK, sector is read
 ;		Carry is set: some error!
-; Registers destroyed: NONE!
+; Registers destroyed: NONE!!
 ; ***************************
 .PROC	sdcard_read_selected_sector
 	PHA
+	LDA	IO_SD_STATUS
+	AND	#10
+	BNE	sdhc	; if SDHC, no need to convert, as it uses sector addressing already (?)
+	; Not an SDHC card
+	LDA	sd_card_sector+3
+	BNE	error			; non-SDHC card cannot be this large, would overflow during the conversion
+	LDA	sd_card_sector
+	ASL	A
+	STA	IO_SD_SECTOR_ADDRESS+1
+	LDA	sd_card_sector+1
+	ROL	A
+	STA	IO_SD_SECTOR_ADDRESS+2
+	LDA	sd_card_sector+2
+	ROL	A
+	BCS	error
+	STA	IO_SD_SECTOR_ADDRESS+3
+	LDA	#0
+	STA	IO_SD_SECTOR_ADDRESS
+	JMP	no_sdhc
+sdhc:
+	LDA	sd_card_sector
+	STA	IO_SD_SECTOR_ADDRESS
+	LDA	sd_card_sector+1
+	STA	IO_SD_SECTOR_ADDRESS+1
+	LDA	sd_card_sector+2
+	STA	IO_SD_SECTOR_ADDRESS+2
+	LDA	sd_card_sector+3
+	STA	IO_SD_SECTOR_ADDRESS+3
+no_sdhc:
 	LDA	#2	; read sector command
 	STA	IO_SD_CMD
-	; Wait till busy
+	; Wait while card is busy and check error
+wait_when_busy:
 	LDA	IO_SD_STATUS
-	; Check  error status
-
+	AND	#$60
+	BNE	error
+	LDA	IO_SD_STATUS
+	AND	#3
+	BNE	wait_when_busy
 wait_for_read_data:
 	LDA	IO_SD_BYTES_READ		; TODO: in KS, there is a question, why this should be read!
 	LDA	IO_SD_BYTES_READ+1
@@ -27,6 +64,10 @@ wait_for_read_data:
 	PLA
 	CLC
 	RTS
+error:
+	PLA
+	SEC
+	RTS
 .ENDPROC
 
 
@@ -34,49 +75,33 @@ wait_for_read_data:
 ; *********************
 ; Probe SD-card size (this is an ugly probing scheme with binary search, which is kinda easy in case of a binary number anyway)
 ; Input: -
-; Output: Carry is set in case of error
-;         Carry is clear if OK, then SD card sector address registers contain the last valid sector number
+; Output: sd_card_sector contains the last valid sector number (to be sure there is card at all, maybe worth to check then, if the card has the minimum detected size which makes sense)
 ; Registers destroyed: MAYBE ALL
 ; ********************* 
-
-
 .PROC	sdcard_probe_size
-	LDA	#$FF	; initialize sector address regs with all $FF
-	TAZ		; bit counter for the final check
-	TAX		; we also use this as for X start value
-init:
-	INX
-	STA	IO_SD_SECTOR_ADDRESS,X
-	CMP	#3
-	BNE	init
-	; So we have X = 3 now (we need this!): test starts at sector addr reg byte #3 (MSB)
+	LDA	#0
+	STA	z:sd_card_sector
+	STA	z:sd_card_sector+1
+	STA	z:sd_card_sector+2
+	STA	z:sd_card_sector+3
+	LDX	#sd_card_sector + 3
 search_outer:
-	LDA	#$7F			; A holds a bit mask during our test, with a single bit being '0', all others are '1' (reset mask), starting with bit7
+	LDA	#$80			; A holds a bit mask for '1' as the current tested bit
 search:
+	STX	selfmod1
+	selfmod1 = * + 1
+	TSB	z:$80
 	JSR	sdcard_read_selected_sector
-	BCC	found_size
-	INZ
-	; flip address bit to zero
-	TAY				; "save" A
-	AND	IO_SD_SECTOR_ADDRESS,X	; X holds the register offset
-	STA	IO_SD_SECTOR_ADDRESS,X
-	TYA				; "restore" A
-	; next address bit to test
-	ROR	A			; carry still contains '1' before this (by the JSR, since BCC case is handled there), so it's quite OK: new bit appearing at left will be '1'
-	BCS	search			; if original bit0 moved to carry was set, we have remaing bits to test, so do it!
-	; we have to move to the next byte!
+	BCC	no_flip_back
+	STX	selfmod2
+	selfmod2 = * + 1
+	TRB	z:$80
+no_flip_back:
+	CLC
+	ROR	A
+	BCC	search
 	DEX
-	BPL	search_outer
-	; ERROR, this should not happen! This would need we hit bit zero of address and still not readable
-error:
-	SEC				; set error signal
-found_size:				; normal exit, as it jumps here with BCC, that case would produce Carry unset, so everything is OK
-	INZ
-	BEQ	error			; this wants to check if result is not insane (ie, all bits still set 1)
+	CPX	#sd_card_sector - 1
+	BNE	search_outer
 	RTS
 .ENDPROC
-
-
-
-
-

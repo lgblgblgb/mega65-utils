@@ -40,7 +40,7 @@ CA65_OPTS	= -t none
 LD65_OPTS	= -C $(LD65_CFG) -m $(MAP_FILE) -vm
 
 #XEMU_M65	= xemu-xmega65
-XEMU_M65	= /home/lgb/prog_here/xemu/build/bin/xmega65.native
+XEMU_M65	= /home/lgb/prog_here/xemu-merger/build/bin/xmega65.native
 ETHERLOAD	= mega65-etherload
 C1541		= c1541
 CA65		= ca65

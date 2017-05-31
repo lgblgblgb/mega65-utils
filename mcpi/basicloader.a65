@@ -137,7 +137,17 @@ vic_clear_loop:
 	JSR	console_init
 	JSR	clear_screen
 	CLI
-	WRISTR	{"MCPI - Mega65 Command Prompt Interface",13,10}
+	WRISTR	{"MCPI - Mega65 Command Prompt Interface",13,10,"Last valid SD-card sector: $"}
+	JSR	sdcard_probe_size
+;	JSR	sdcard_read_selected_sector
+	LDA	sd_card_sector+3
+	JSR	write_hex_byte
+	LDA	sd_card_sector+2
+	JSR	write_hex_byte
+	LDA	sd_card_sector+1
+	JSR	write_hex_byte
+	LDA	sd_card_sector+0
+	JSR	write_hex_byte
 loop:
 	JMP	loop
 .ENDPROC
