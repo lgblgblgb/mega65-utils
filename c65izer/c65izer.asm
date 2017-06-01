@@ -144,7 +144,7 @@ copy:
 	BNE	copy
 
 	; X is zero now
-	LDY	#.HIBYTE($10000 - __PAYLOAD_LOAD__)	; ehm, really no need to copy this much of pages anyway :-O
+	LDY	#.HIBYTE($C000 - __PAYLOAD_LOAD__)	; ehm, maybe we can be more precise how much memory should be copied ...
 	SEI
 	STX	1	; all RAM config!! (X=0)
 	JMP	copy_relocated	; (X and Y must be set)
