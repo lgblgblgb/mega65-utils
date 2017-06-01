@@ -141,6 +141,10 @@ write_crlf:
 	LDA	#10
 	JMP	write_char
 
+write_space:
+	LDA	#32
+	JMP	write_char
+
 write_hex_byte_at_zp:
 	PHX
 	TAX

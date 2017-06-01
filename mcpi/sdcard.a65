@@ -13,12 +13,15 @@ sd_card_sector:	.RES 4
 ; Output: 
 ;		Carry is clear: OK, sector is read
 ;		Carry is set: some error!
-; Registers destroyed: NONE!!
+; Registers destroyed: NONE!! (so it can be used in any routine needs all registers preserved!)
+; Looks ugly to conditinally convert sector numbers to bytes, but in my opinion is still much
+; more nice than do a doniditional behaviour at every place of the code where a block is needed to read.
+; TODO: no timeout, no-retry, maybe does not even work on a real M65!
 ; ***************************
 .PROC	sdcard_read_selected_sector
 	PHA
 	LDA	IO_SD_STATUS
-	AND	#10
+	AND	#$10
 	BNE	sdhc	; if SDHC, no need to convert, as it uses sector addressing already (?)
 	; Not an SDHC card
 	LDA	sd_card_sector+3
@@ -72,36 +75,53 @@ error:
 
 
 
-; *********************
-; Probe SD-card size (this is an ugly probing scheme with binary search, which is kinda easy in case of a binary number anyway)
-; Input: -
-; Output: sd_card_sector contains the last valid sector number (to be sure there is card at all, maybe worth to check then, if the card has the minimum detected size which makes sense)
-; Registers destroyed: MAYBE ALL
-; ********************* 
-.PROC	sdcard_probe_size
+.PROC	sdcard_select_zero_sector
 	LDA	#0
 	STA	z:sd_card_sector
 	STA	z:sd_card_sector+1
 	STA	z:sd_card_sector+2
 	STA	z:sd_card_sector+3
-	LDX	#sd_card_sector + 3
+	RTS
+.ENDPROC
+
+
+.PROC	sdcard_select_next_sector
+	INW	z:sd_card_sector
+	BNE	ok
+	INW	z:sd_card_sector+2
+ok:
+	RTS
+.ENDPROC
+
+
+
+
+; *********************
+; Probe SD-card size (this is an ugly probing scheme with binary search, which is kinda easy in case of a binary number anyway)
+; Input: -
+; Output: sd_card_sector contains the last valid sector number (to be sure there is card at all, maybe worth to check then, if the card has the minimum detected size which makes sense)
+; Registers destroyed: A,X
+; ********************* 
+.PROC	sdcard_probe_size
+	JSR	sdcard_select_zero_sector
+	LDX	#sd_card_sector + 3		; start with the most significant byte
 search_outer:
-	LDA	#$80			; A holds a bit mask for '1' as the current tested bit
+	LDA	#$80				; A holds a bit mask for '1' as the current tested bit (start with the most significant bit) - A must be preserved/maintained during the loop
 search:
 	STX	selfmod1
 	selfmod1 = * + 1
-	TSB	z:$80
-	JSR	sdcard_read_selected_sector
+	TSB	z:$80				; flip current bit to '1'
+	JSR	sdcard_read_selected_sector	; try read
 	BCC	no_flip_back
-	STX	selfmod2
+	STX	selfmod2			; if it does not work, flip it back to zero, otherwise leave bit as '1'
 	selfmod2 = * + 1
 	TRB	z:$80
 no_flip_back:
 	CLC
-	ROR	A
-	BCC	search
-	DEX
-	CPX	#sd_card_sector - 1
+	ROR	A				; next bit to test
+	BCC	search				; out of bits in the current byte?
+	DEX					; do next byte
+	CPX	#sd_card_sector - 1		; tested all the bits/bytes?
 	BNE	search_outer
 	RTS
 .ENDPROC

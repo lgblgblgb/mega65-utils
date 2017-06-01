@@ -53,12 +53,17 @@ PUBLIC	CONSOLE_A65_SELF, write_hex_byte
 PUBLIC	CONSOLE_A65_SELF, write_hex_nib
 PUBLIC	CONSOLE_A65_SELF, write_char
 PUBLIC	CONSOLE_A65_SELF, write_crlf
+PUBLIC	CONSOLE_A65_SELF, write_space
 PUBLIC	CONSOLE_A65_SELF, conin_check_status
 PUBLIC	CONSOLE_A65_SELF, conin_get_with_wait
 ; *** sdcard.a65
 PUBLIC	SDCARD_A65_SELF, sdcard_probe_size
 PUBLIC	SDCARD_A65_SELF, sdcard_read_selected_sector
+PUBLIC	SDCARD_A65_SELF, sdcard_select_zero_sector
+PUBLIC	SDCARD_A65_SELF, sdcard_select_next_sector
 PUBLICZP	SDCARD_A65_SELF, sd_card_sector
+; *** main.a65
+PUBLIC	MAIN_A65_SELF, main
 
 IO_SD_SECTOR_ADDRESS	= $D681
 IO_SD_BYTES_READ	= $D688

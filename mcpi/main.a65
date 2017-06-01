@@ -1,0 +1,299 @@
+MAIN_A65_SELF: .INCLUDE "mcpi.i65"
+
+.ZEROPAGE
+
+cluster_number_ptr: .RES 2
+
+.BSS
+
+clusters_start: .RES 4
+sectors_per_cluster: .RES 1
+cluster_of_root_directory: .RES 4
+cluster_of_current_directory: .RES 4
+
+.CODE
+
+
+.PROC	show_sdcard_sector_number
+	LDA	sd_card_sector+3
+	JSR	write_hex_byte
+	LDA	sd_card_sector+2
+	JSR	write_hex_byte
+	LDA	sd_card_sector+1
+	JSR	write_hex_byte
+	LDA	sd_card_sector+0
+	JMP	write_hex_byte
+.ENDPROC
+
+
+; Select a cluster's Nth sector for reading
+; Note: there is no check if "N" is within the sectors of cluster valid range
+; The result is an SD-card sector number, so sdcard_read function can be used then
+; Input: A = Nth sector within the cluster
+;        cluster_number = pointer to the memory where cluster number is
+.PROC	cluster_select
+	PHX
+	PHY
+	PHA	; save A
+	LDY	#3
+copy:
+	LDA	(cluster_number_ptr),Y
+	STA	sd_card_sector,Y
+	DEY
+	BPL	copy
+
+
+	LDA	sectors_per_cluster
+shift:
+	LSR	A
+	BEQ	no_shift
+	ASL	sd_card_sector+0
+	ROL	sd_card_sector+1
+	ROL	sd_card_sector+2
+	ROL	sd_card_sector+3
+	BRA	shift
+no_shift:
+	
+
+
+	CLC
+add:
+	LDA	sd_card_sector,X
+	ADC	clusters_start,X
+	STA	sd_card_sector,X
+	INX
+	CPX	#4
+	BNE	add
+
+
+	CLC
+	PLA
+	PHA
+	ADC	sd_card_sector
+	STA	sd_card_sector
+	BCC	end
+	INC	sd_card_sector+1
+	BNE	end
+	INW	sd_card_sector+2
+end:
+	PLA
+	PLY
+	PLX
+	RTS
+.ENDPROC
+
+
+
+.PROC	sdcard_read
+	JSR	sdcard_read_selected_sector
+	BCS	sdcard_read_error
+	RTS
+.ENDPROC
+.PROC	sdcard_read_error
+	WRISTR	{13,10,"Error reading SD-card sector "}
+	JSR	show_sdcard_sector_number
+.ENDPROC
+.PROC	fatal_error
+	WRISTR	{13,10,"FATAL ERROR, HALTED."}
+loop:
+	JMP	loop
+.ENDPROC
+
+
+
+.PROC	use_partition
+	AND	#3
+	PHA
+	WRISTR	"Mount: p"
+	PLA
+	PHA
+	JSR	write_hex_byte
+	PLA
+	ASL	A
+	ASL	A
+	ASL	A
+	ASL	A
+	ADC	#$BE
+	TAX
+	JSR	sdcard_select_zero_sector
+	JSR	sdcard_read
+
+	WRISTR	": type="
+	LDA	$DF04,X
+	PHA
+	JSR	write_hex_byte
+	JSR	write_space
+	PLA
+	CMP	#$C
+	LBNE	error_bad_part_type
+
+	LDA	$DF08,X
+	ORA	$DF09,X
+	ORA	$DF0A,X
+	ORA	$DF0B,X
+	LBEQ	error_bad_lba_start
+
+	LDA	$DF0C,X
+	ORA	$DF0D,X
+	ORA	$DF0E,X
+	ORA	$DF0F,X
+	LBEQ	error_bad_lba_size
+
+	LDA	$DF08,X
+	STA	sd_card_sector
+	LDA	$DF09,X
+	STA	sd_card_sector+1
+	LDA	$DF0A,X
+	STA	sd_card_sector+2
+	LDA	$DF0B,X
+	STA	sd_card_sector+3
+	WRISTR	"@ $"
+	JSR	show_sdcard_sector_number
+	JSR	write_crlf
+
+	JSR	sdcard_read	; read the "boot sector" of the filesystem
+
+	LDA	$DE42
+	CMP	#$29
+	LBNE	error_extended_boot_signature
+
+	WRISTR	"FATs: "
+	LDA	$DE10
+	JSR	write_hex_byte
+	JSR	write_crlf
+	LDA	$DE10
+	CMP	#2
+	LBNE	error_bad_number_of_fats
+
+
+	LDX	#7
+check_fat32_signature:
+	LDA	$DE52,X
+	CMP	fat32_signature,X
+	LBNE	error_not_fat32
+	DEX
+	BPL	check_fat32_signature
+	
+	LDA	$DE0B
+	LBNE	error_not_supported_logical_sector_size
+	LDA	$DE0C
+	CMP	#2
+	LBNE	error_not_supported_logical_sector_size
+
+	WRISTR	"Sectors per cluster: $"
+	LDA	$DE0D		; logical sectors per cluster
+	STA	sectors_per_cluster
+	JSR	write_hex_byte
+	JSR	write_crlf
+	LDA	$DE0D		; now check it!
+	LBEQ	error_bad_cluster_size
+test_cluster_size:
+	LSR	A
+	BCC	test_cluster_size
+	LBNE	error_bad_cluster_size
+
+
+
+	LDX	#3
+copy_infos:
+	LDA	$DE2C,X
+	STA	cluster_of_root_directory,X
+	DEX
+	BPL	copy_infos
+
+
+	WRISTR	{"Mounted.",13,10}
+	CLC
+	RTS
+
+error_bad_part_type:
+	WRISTR	{"Bad type, $C expected",13,10}
+	SEC
+	RTS
+error_bad_lba_start:
+	WRISTR	{"Bad LBA start",13,10}
+	SEC
+	RTS
+error_bad_lba_size:
+	WRISTR	{"Bad LBA size",13,10}
+	SEC
+	RTS
+error_not_supported_logical_sector_size:
+	WRISTR	{"Not 512 bytes per logical sector",13,10}
+	SEC
+	RTS
+error_not_fat32:
+	WRISTR	{"Not FAT32",13,10}
+	SEC
+	RTS
+error_extended_boot_signature:
+	JSR	write_hex_byte
+	WRISTR	{": boot signature is not supported",13,10}
+	SEC
+	RTS
+error_bad_cluster_size:
+	WRISTR	{"Bad cluster size info",13,10}
+	SEC
+	RTS
+error_bad_number_of_fats:
+	WRISTR	{"Only dual FAT is supported",13,10}
+	SEC
+	RTS
+fat32_signature:
+	.BYTE	"FAT32", 32, 32, 32
+.ENDPROC
+
+
+
+
+.PROC	main
+	WRISTR	{"MCPI - Mega65 Command Prompt Interface",13,10,"Mapping SD-buffer: "}
+	LDA	#$81	; map SD-buffer
+	STA	IO_SD_CMD
+	LDA	IO_SD_STATUS
+	AND	#8
+	LBEQ	fatal_error
+	WRISTR	{"OK",13,10,"Card-type (status): "}
+	LDA	IO_SD_STATUS
+	AND	#$10
+	BNE	is_sdhc
+	WRISTR	"non-"
+is_sdhc:
+	WRISTR	{"SDHC", 13, 10, "SD-card sectors (may not valid in case a problem): $"}
+	JSR	sdcard_probe_size
+	JSR	sdcard_select_next_sector       ; so we have the total number of sectors, not the last valid one
+	JSR	show_sdcard_sector_number	; TODO: we should store the detected size for later usage! Now it's only displayed ...
+	JSR	write_crlf
+	; Read MBR
+	JSR	sdcard_select_zero_sector
+	JSR	sdcard_read
+
+
+	LDX	#0
+	LDY	#0
+dump_partitions:
+	WRISTR	{"  p"}
+	TYA
+	JSR	write_hex_byte
+	LDA	#':'
+	JSR	write_char
+dump_partitions_inner:
+	JSR	write_space
+	LDA	$DFBE,X
+	JSR	write_hex_byte
+	INX
+	TXA
+	AND	#15
+	BNE	dump_partitions_inner
+	JSR	write_crlf
+	INY
+	CPY	#4
+	BNE	dump_partitions
+
+
+	LDA	#0
+	JSR	use_partition
+
+loop:
+	JMP	loop
+.ENDPROC

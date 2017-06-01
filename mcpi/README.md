@@ -1,6 +1,6 @@
 # MCPI - Mega65 Command Processor Interface
 
-An ugly attempt to create a stand alone (ie, working even any C65 ROM)
+An ugly attempt to create a stand alone (ie, working even without any C65 ROM)
 command line interface for Mega65 with commands and utilities to maintain
 Mega-65 specific functions (ie: SD-card, network download, etc).
 

@@ -47,8 +47,6 @@
 	.BYTE	0
 lastline:
 	.WORD	0
-stub_main:
-	JMP	main
 .ENDSCOPE
 
 .CODE
@@ -69,13 +67,15 @@ stub_main:
 	RTS
 .ENDPROC
 
-.PROC	main
+.SEGMENT "BASICSTUB"
+
+.PROC	stub_main
 	; Generic stuffs
 	; TODO: if only used as PRG file, BASIC stub should be modified for BANK other than 0 to avoid re-mapping?
 	; Also many things are initialized here quite "low-level style", the idea: maybe can be used without any ROM, pre-init etc as well later ...
 	; Another intent, that it can be used from C64 mode as well to initialize or defaults (maybe later with also C64-mode loader?), so we can't relay on some things to be set already.
 	SEI
-	JSR	set_m65_io_mode
+	JSR	set_m65_io_mode	; M65: force CPU personality not to be 6502, on C65 it does not matter too much
 	CLD
 	LDA	#0		; A:=0
 	TAX			; X:=0
@@ -136,18 +136,8 @@ vic_clear_loop:
 	;
 	JSR	console_init
 	JSR	clear_screen
+	WRISTR	{"Console is ready. Enabling IRQ",13,10}
 	CLI
-	WRISTR	{"MCPI - Mega65 Command Prompt Interface",13,10,"Last valid SD-card sector: $"}
-	JSR	sdcard_probe_size
-;	JSR	sdcard_read_selected_sector
-	LDA	sd_card_sector+3
-	JSR	write_hex_byte
-	LDA	sd_card_sector+2
-	JSR	write_hex_byte
-	LDA	sd_card_sector+1
-	JSR	write_hex_byte
-	LDA	sd_card_sector+0
-	JSR	write_hex_byte
-loop:
-	JMP	loop
+	WRISTR	{"BASIC-STUB loader",13,10}
+	JMP	main
 .ENDPROC
