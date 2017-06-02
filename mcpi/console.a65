@@ -1,7 +1,6 @@
 ; ----------------------------------------------------------------------------
 ;
-; Software emulator of the 8080 CPU for the Mega-65, intended for CP/M or such.
-; Please read comments throughout this source for more information.
+; MCPI - Mega65 Command Processor Interface
 ;
 ; Copyright (C)2017 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 ;

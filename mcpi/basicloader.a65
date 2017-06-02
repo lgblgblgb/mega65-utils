@@ -1,12 +1,10 @@
-; Wannabe generic C65-mode loader for Mega-65: the loader/"basic stub"
+; ----------------------------------------------------------------------------
 ;
-; This file (with the Makefile too) also functions as an intended example
-; for M65 development, using C65 mode loader, and Xemu to test (see Makefile)
-; during the development. Please feel free to contant me with suggested
-; modifications, it's higly onl a try&error method to do something useful.
-; This is also a reason this source is "over-commented".
+; MCPI - Mega65 Command Processor Interface
 ;
 ; Copyright (C)2017 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+;
+; ----------------------------------------------------------------------------
 ;
 ; This program is free software; you can redistribute it and/or modify
 ; it under the terms of the GNU General Public License as published by
@@ -20,7 +18,8 @@
 ;
 ; You should have received a copy of the GNU General Public License
 ; along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
+;
+; ----------------------------------------------------------------------------
 
 .INCLUDE "mcpi.i65"
 

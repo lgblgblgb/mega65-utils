@@ -5,6 +5,8 @@
 *.inc linguist-language=Assembly
 *.s linguist-language=Assembly
 *.S linguist-language=Assembly
+*.a65 linguist-language=Assembly
+*.i65 linguist-language=Assembly
 Makefile.* linguist-language=Makefile
 Makefile linguist-language=Makefile
 *.mk linguist-language=Makefile

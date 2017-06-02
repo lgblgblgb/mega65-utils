@@ -1,6 +1,10 @@
-; Some misc. Mega-65 specific CA65 helpers
+; ----------------------------------------------------------------------------
+;
+; MCPI - Mega65 Command Processor Interface
 ;
 ; Copyright (C)2017 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+;
+; ----------------------------------------------------------------------------
 ;
 ; This program is free software; you can redistribute it and/or modify
 ; it under the terms of the GNU General Public License as published by
@@ -14,6 +18,8 @@
 ;
 ; You should have received a copy of the GNU General Public License
 ; along with this program.  If not, see <http://www.gnu.org/licenses/>.
+;
+; ----------------------------------------------------------------------------
 
 .SETCPU "4510"		; This requires quite new CA65 (of the CC65 suite) version, maybe only the git version can do this ...
 
@@ -64,6 +70,9 @@ PUBLIC	SDCARD_A65_SELF, sdcard_select_next_sector
 PUBLICZP	SDCARD_A65_SELF, sd_card_sector
 ; *** main.a65
 PUBLIC	MAIN_A65_SELF, main
+; *** shell.a65
+PUBLIC	SHELL_A65_SELF, command_processor
+
 
 IO_SD_SECTOR_ADDRESS	= $D681
 IO_SD_BYTES_READ	= $D688
