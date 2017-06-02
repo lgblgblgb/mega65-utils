@@ -67,12 +67,19 @@ PUBLIC	SDCARD_A65_SELF, sdcard_probe_size
 PUBLIC	SDCARD_A65_SELF, sdcard_read_selected_sector
 PUBLIC	SDCARD_A65_SELF, sdcard_select_zero_sector
 PUBLIC	SDCARD_A65_SELF, sdcard_select_next_sector
+PUBLIC	SDCARD_A65_SELF, show_sdcard_sector_number
+PUBLIC	SDCARD_A65_SELF, sdcard_read
 PUBLICZP	SDCARD_A65_SELF, sd_card_sector
 ; *** main.a65
 PUBLIC	MAIN_A65_SELF, main
+PUBLIC	MAIN_A65_SELF, fatal_error
 ; *** shell.a65
 PUBLIC	SHELL_A65_SELF, command_processor
-
+; *** fat32.a65
+PUBLIC	FAT32_A65_SELF, mount_partition
+PUBLIC	FAT32_A65_SELF, cluster_select
+PUBLIC	FAT32_A65_SELF, cluster_of_current_directory
+PUBLICZP	FAT32_A65_SELF, cluster_number_ptr
 
 IO_SD_SECTOR_ADDRESS	= $D681
 IO_SD_BYTES_READ	= $D688

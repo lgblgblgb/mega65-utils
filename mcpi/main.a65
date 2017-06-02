@@ -24,320 +24,16 @@
 
 MAIN_A65_SELF: .INCLUDE "mcpi.i65"
 
-.ZEROPAGE
-
-cluster_number_ptr: .RES 2
-
-.BSS
-
-; Holds the SD-card sector number where the mounted FS has the data area begins
-clusters_start: .RES 4
-
-; Holds the SD-card sector number where (the first) FAT starts
-fat_start: .RES 4
-
-; Size of FAT (one FAT) in sectors. Used for writing, when two FATs should be updated
-fat_size: .RES 4
-
-
-
-sectors_per_cluster: .RES 1
-cluster_of_root_directory: .RES 4
-cluster_of_current_directory: .RES 4
-
 .CODE
 
 
-.PROC	show_sdcard_sector_number
-	LDA	sd_card_sector+3
-	JSR	write_hex_byte
-	LDA	sd_card_sector+2
-	JSR	write_hex_byte
-	LDA	sd_card_sector+1
-	JSR	write_hex_byte
-	LDA	sd_card_sector+0
-	JMP	write_hex_byte
-.ENDPROC
-
-
-; Select a cluster's Nth sector for reading
-; Note: there is no check if "N" is within the sectors of cluster valid range
-; The result is an SD-card sector number, so sdcard_read function can be used then
-; Input: A = Nth sector within the cluster
-;        cluster_number = pointer to the memory where cluster number is
-.PROC	cluster_select
-	PHX
-	PHY
-	PHA	; save A
-
-
-	LDY	#0
-	LDA	(cluster_number_ptr),Y
-	SEC
-	SBC	#2	; clusters starts with 2 ...
-	STA	sd_card_sector
-	.REPEAT 3
-	INY
-	LDA	(cluster_number_ptr),Y
-	SBC	#0
-	STA	sd_card_sector,Y
-	.ENDREPEAT
-
-
-	LDA	sectors_per_cluster
-shift:
-	LSR	A
-	BEQ	no_shift
-	ASL	sd_card_sector+0
-	ROL	sd_card_sector+1
-	ROL	sd_card_sector+2
-	ROL	sd_card_sector+3
-	BRA	shift
-no_shift:
-	
-
-	CLC
-	LDA	sd_card_sector+0
-	ADC	clusters_start+0
-	STA	sd_card_sector+0
-	LDA	sd_card_sector+1
-	ADC	clusters_start+1
-	STA	sd_card_sector+1
-	LDA	sd_card_sector+2
-	ADC	clusters_start+2
-	STA	sd_card_sector+2
-	LDA	sd_card_sector+3
-	ADC	clusters_start+3
-	STA	sd_card_sector+3
-
-
-	CLC
-	PLA
-	PHA
-	ADC	sd_card_sector
-	STA	sd_card_sector
-	BCC	end
-	INC	sd_card_sector+1
-	BNE	end
-	INW	sd_card_sector+2
-end:
-	PLA
-	PLY
-	PLX
-	RTS
-.ENDPROC
-
-
-
-.PROC	sdcard_read
-	JSR	sdcard_read_selected_sector
-	BCS	sdcard_read_error
-	RTS
-.ENDPROC
-.PROC	sdcard_read_error
-	WRISTR	{13,10,"Error reading SD-card sector "}
-	JSR	show_sdcard_sector_number
-.ENDPROC
 .PROC	fatal_error
 	WRISTR	{13,10,"FATAL ERROR, HALTED."}
 loop:
-	JMP	loop
+	INC	$D021
+	BRA	loop
 .ENDPROC
 
-
-
-.PROC	use_partition
-	AND	#3
-	PHA
-	WRISTR	"Mount: p"
-	PLA
-	PHA
-	JSR	write_hex_byte
-	PLA
-	ASL	A
-	ASL	A
-	ASL	A
-	ASL	A
-	ADC	#$BE
-	TAX
-	JSR	sdcard_select_zero_sector
-	JSR	sdcard_read
-
-	WRISTR	": type="
-	LDA	$DF04,X
-	PHA
-	JSR	write_hex_byte
-	JSR	write_space
-	PLA
-	CMP	#$C
-	LBNE	error_bad_part_type
-
-	LDA	$DF08,X
-	ORA	$DF09,X
-	ORA	$DF0A,X
-	ORA	$DF0B,X
-	LBEQ	error_bad_lba_start
-
-	LDA	$DF0C,X
-	ORA	$DF0D,X
-	ORA	$DF0E,X
-	ORA	$DF0F,X
-	LBEQ	error_bad_lba_size
-
-	LDA	$DF08,X
-	STA	sd_card_sector
-	LDA	$DF09,X
-	STA	sd_card_sector+1
-	LDA	$DF0A,X
-	STA	sd_card_sector+2
-	LDA	$DF0B,X
-	STA	sd_card_sector+3
-	WRISTR	"@ $"
-	JSR	show_sdcard_sector_number
-	JSR	write_crlf
-
-	JSR	sdcard_read	; read the "boot sector" of the filesystem
-
-	LDA	$DE42
-	CMP	#$29
-	LBNE	error_extended_boot_signature
-
-	WRISTR	"  FATs="
-	LDA	$DE10
-	JSR	write_hex_byte
-	LDA	$DE10
-	CMP	#2
-	LBNE	error_bad_number_of_fats
-
-
-	LDX	#7
-check_fat32_signature:
-	LDA	$DE52,X
-	CMP	fat32_signature,X
-	LBNE	error_not_fat32
-	DEX
-	BPL	check_fat32_signature
-	
-	LDA	$DE0B
-	LBNE	error_not_supported_logical_sector_size
-	LDA	$DE0C
-	CMP	#2
-	LBNE	error_not_supported_logical_sector_size
-
-	WRISTR	" cluser_size=$"
-	LDA	$DE0D		; logical sectors per cluster
-	STA	sectors_per_cluster
-	JSR	write_hex_byte
-	LDA	$DE0D		; now check it!
-	LBEQ	error_bad_cluster_size
-test_cluster_size:
-	LSR	A
-	BCC	test_cluster_size
-	LBNE	error_bad_cluster_size
-
-
-	WRISTR	" root_dir_cluster=$"
-	LDX	#3
-copy_infos:
-	; store FAT size, used later for WRITE FAT when two FAT copies are needed to be updated (so second fat will be at sector fat_start + fat_size)
-	LDA	$DE24,X
-	STA	fat_size,X
-	; Copy cluster of root dir (normally it's should be 2, but who knows ...)
-	LDA	$DE2C,X
-	STA	cluster_of_root_directory,X
-	STA	cluster_of_current_directory,X
-	JSR	write_hex_byte
-	DEX
-	BPL	copy_infos
-
-	; *** Calculate the SD-card sector of the beginning of the first FAT
-	; this requires that boot sector number is still in sd_card_sector!!
-	WRISTR	" reserved_sectors=$"
-	LDA	$DE0F
-	JSR	write_hex_byte
-	LDA	$DE0E
-	JSR	write_hex_byte
-	CLC
-	LDA	$DE0E
-	ADC	sd_card_sector
-	STA	fat_start
-	LDA	$DE0F
-	ADC	sd_card_sector+1
-	STA	fat_start+1
-	LDA	sd_card_sector+2
-	ADC	#0
-	STA	fat_start+2
-	LDA	sd_card_sector+3
-	ADC	#0
-	STA	fat_start+3
-	JSR	write_crlf
-
-	; *** Calculate the SD-card sector of the beginning of the data area
-	; FIXME: now we ignore FAT copy, so just multiply FAT size by two
-	ASL	$DE24
-	ROL	$DE25
-	ROL	$DE26
-	ROL	$DE27
-	CLC
-	LDA	$DE24
-	ADC	fat_start
-	STA	clusters_start
-	LDA	$DE25
-	ADC	fat_start+1
-	STA	clusters_start+1
-	LDA	$DE26
-	ADC	fat_start+2
-	STA	clusters_start+2
-	LDA	$DE27
-	ADC	fat_start+3
-	STA	clusters_start+3
-
-	WRISTR	{"OK, mounted.",13,10}
-	CLC
-	RTS
-
-error_bad_part_type:
-	JSR	error_intro
-	WRISTR	"Bad type, $C expected"
-	LBRA	error_return
-error_bad_lba_start:
-	JSR	error_intro
-	WRISTR	"Bad LBA start"
-	LBRA	error_return
-error_bad_lba_size:
-	JSR	error_intro
-	WRISTR	"Bad LBA size"
-	LBRA	error_return
-error_not_supported_logical_sector_size:
-	JSR	error_intro
-	WRISTR	"Not 512 bytes per logical sector"
-	BRA	error_return
-error_not_fat32:
-	JSR	error_intro
-	WRISTR	"Not FAT32"
-	BRA	error_return
-error_extended_boot_signature:
-	JSR	error_intro
-	JSR	write_hex_byte
-	WRISTR	": boot signature is not supported"
-	BRA	error_return
-error_bad_cluster_size:
-	JSR	error_intro
-	WRISTR	"Bad cluster size info"
-	BRA	error_return
-error_bad_number_of_fats:
-	JSR	error_intro
-	WRISTR	"Only dual FAT is supported"
-error_return:
-	JSR	write_crlf
-	SEC
-	RTS
-error_intro:
-	WRISTR	{13,10,"ERROR: Cannot mount: "}
-	RTS
-fat32_signature:
-	.BYTE	"FAT32", 32, 32, 32
-.ENDPROC
 
 
 
@@ -363,8 +59,7 @@ is_sdhc:
 	; Read MBR
 	JSR	sdcard_select_zero_sector
 	JSR	sdcard_read
-
-
+	; Dump list of partitions in a lamer way (hex dump)
 	LDX	#0
 	LDY	#0
 dump_partitions:
@@ -385,30 +80,13 @@ dump_partitions_inner:
 	INY
 	CPY	#4
 	BNE	dump_partitions
-
-
+	; Mount partition zero
 	LDA	#0
-	JSR	use_partition
-
-
-	; TEST
-	LDA	#.LOBYTE(cluster_of_root_directory)
-	STA	cluster_number_ptr
-	LDA	#.HIBYTE(cluster_of_root_directory)
-	STA	cluster_number_ptr+1
-	LDA	#0
-	JSR	cluster_select
-	JSR	sdcard_read
-
-	LDX	#0
-;wow:
-;	LDA	$DE00,X
-;	JSR	write_char
-;	INX
-;	BNE	wow
-
+	JSR	mount_partition
+	LBCS	fatal_error
+	; Goes into the shell, user session!
+	WRISTR	{"Entering interactive shell mode.",13,10}
 	JSR	command_processor
-loop:
-	INC	$D021
-	JMP	loop
+	WRISTR	{"Exit from system?",13,10}
+	JMP	fatal_error
 .ENDPROC

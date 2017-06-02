@@ -30,6 +30,27 @@ sd_card_sector:	.RES 4
 
 .CODE
 
+.PROC	show_sdcard_sector_number
+	LDA	sd_card_sector+3
+	JSR	write_hex_byte
+	LDA	sd_card_sector+2
+	JSR	write_hex_byte
+	LDA	sd_card_sector+1
+	JSR	write_hex_byte
+	LDA	sd_card_sector+0
+	JMP	write_hex_byte
+.ENDPROC
+
+.PROC	sdcard_read
+	JSR	sdcard_read_selected_sector
+	BCS	sdcard_read_error
+	RTS
+.ENDPROC
+.PROC	sdcard_read_error
+	WRISTR	{13,10,"Error reading SD-card sector "}
+	JSR	show_sdcard_sector_number
+	JMP	fatal_error
+.ENDPROC
 
 ; ********************************
 ; Read sector

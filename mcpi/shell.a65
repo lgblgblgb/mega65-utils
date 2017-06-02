@@ -349,16 +349,31 @@ no_param:
 	JMP	command_processor::shell_loop
 .ENDPROC
 
+.PROC	command_dir
+	LDA	#<cluster_of_current_directory
+	STA	cluster_number_ptr
+	LDA	#>cluster_of_current_directory
+	STA	cluster_number_ptr+1
+	LDA	#0
+	JSR	cluster_select
+	JSR	sdcard_read
+
+	WRISTR	{"dir: not implemented yet :-(",13,10}
+	JMP	command_processor::shell_loop
+.ENDPROC
+
 
 ; Jump table for the given commands
 ; Order must be the same as with "cmdnames"
 cmdjumps_lo:
 	.LOBYTES	command_bank
+	.LOBYTES	command_dir
 	.LOBYTES	command_exit
 	.LOBYTES	command_help
 	.LOBYTES	command_mem
 cmdjumps_hi:
 	.HIBYTES	command_bank
+	.HIBYTES	command_dir
 	.HIBYTES	command_exit
 	.HIBYTES	command_help
 	.HIBYTES	command_mem
@@ -367,6 +382,7 @@ cmdjumps_hi:
 ; Order must be the same as with "cmdnames"
 cmdhelps:
 	.BYTE	"Set bank for mem cm", 'd'|128		; command "bank"
+	.BYTE	"Directory lis", 't'|128		; command "dir"
 	.BYTE	"Exit shell, star", 't'|128		; command "exit"
 	.BYTE	"You read tha",'t'|128			; command "help"
 	.BYTE	"Dump memor", 'y'|128			; command "mem"
@@ -374,6 +390,7 @@ cmdhelps:
 ; Last char for each cmd is bit7 set. Zero termination.
 cmdnames:
 	.BYTE	"ban",'k'|128
+	.BYTE	"di",'r'|128
 	.BYTE	"exi",'t'|128
 	.BYTE	"hel",'p'|128
 	.BYTE	"me",'m'|128
