@@ -1,0 +1,148 @@
+; ** A work-in-progess Mega-65 (Commodore-65 clone origins) emulator
+; ** Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
+; ** Copyright (C)2018 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+;
+; This program is free software; you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation; either version 2 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program; if not, write to the Free Software
+; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+.INCLUDE	"common.i65"
+
+.CODE
+
+
+; Can be called if RX buffer seems to contain an ARP something payload.
+; This routine further analyze RX buffer, that it's really an ARP request,
+; and is it targeting us. If so, it also replies to the request, that other
+; machines on the LAN will know us. Routine "is_our_ip" is used to check
+; if the target IPv4 address is our one.
+; INPUT: none, just RX buffer should contain the received ARP eth payload still,
+;        with preferably pre-checked that the ethertype is ARP.
+; OUTPUT: -
+
+.PROC	arp_handle
+	; Note, that we do not care about MAC filtering. We only check here that IP address in the request.
+	; First we assume, that it's a valid ARP request and check IP first. This is because it's the
+	; "cheaper" check. We'll check other things if it *seems* to be valid and our one.
+
+	LDX	#24				; offset in ARP request: target IP
+	JSR	is_our_ip			; check if the ARP request is about our IP
+	BNE	ret				; if not, just ignore it, back to the main loop
+
+	; Ok, now as we assumed it is a valid ARP request at all, let's check it (it can be an **ARP reply**
+	; as well, aka a gratuitous ARP for example, what we can also seen, even if it's not interesting for us)
+	; If it turns out to be, we have already know then, we should reply.
+	; We don't use the ARP sample's two bytes, it was already checked
+
+	; Check size of wannabe ARP request, we need at least (or exactly? ... anyway) 28+6+6+2 = 42 bytes
+	; We don't check size of high byte, but that's unrealistic to have ARP stuff with > 255 bytes
+	LDA	RX_LEN
+	CMP	#42
+	BCC	ret
+
+	LDX	#8-1
+check_loop:
+	LDA	RX_ETH_PAYLOAD,X
+	CMP	arp_req_sample,X
+	BNE	ret 			; it doesn't seems to be an ARP request (or not even a request ...) which we're interested in
+	DEX
+	BPL	check_loop
+
+	 ; Cool enough, everything seems to be so perfect (valid ARP request for us), we want to send an ARP reply now
+
+	LDX	#6		; 6 = ARP ethertype
+	JSR	make_reply_frame_eth_header
+
+	; Copy the ARP request sample, we have to patch then a single byte, being the reply not the request actually
+	MEMCPY  TX_ETH_PAYLOAD, arp_req_sample, 8
+	LDA	#2
+	STA	TX_ETH_PAYLOAD+7
+
+	; Copy request's source MAC+IP (4+6=10 bytes) as the reply's target
+	MEMCPY	TX_ETH_PAYLOAD+18, RX_ETH_PAYLOAD+8,10
+
+	; Copy our MAC adress
+	MEMCPY	TX_ETH_PAYLOAD+8, OUR_MAC, 6
+
+	; Copy requested IP
+	MEMCPY	TX_ETH_PAYLOAD+14, RX_ETH_PAYLOAD+24, 4
+
+	; Advance counter for processed ARP requests "ARP:000"
+	CALLBACK_REPLIED_ARP
+	
+	; Ready to TX, setup TX size and trigger TX
+	LDA	#42
+	JMP	eth_do_tx_short
+ret:
+	RTS
+.ENDPROC
+
+
+
+; X=Ethertype, low byte only (hi is always 8)
+.PROC	make_reply_frame_eth_header
+	LDA	#8
+	STA	TX_ETHERTYPE
+	STX	TX_ETHERTYPE+1
+	LDX	#5
+loop:
+	LDA	OUR_MAC,X
+	STA	TX_ETH_MAC_SRC,X
+	LDA	RX_ETH_MAC_SRC,X
+	STA	TX_ETH_MAC_DST,X
+	DEX
+	BPL	loop
+	RTS
+.ENDPROC
+
+
+
+
+	; * ACK' previous packet (what LSR does, last used buffer by ctrl is moved to the mapped bit), also at the FIRST iteration, it just do some kind of "init" for us
+	;   and enable RX by triggering the eth ctrl's buffer swap requirement (see: LSR)
+	; * do not hold ctrl in reset (bit 0 set with ORA)
+	; * clear TX/RX IRQ signals (but IRQs are NOT enabled here, we're using just polling), any write to $D6E1 do, so it's OK
+.PROC	eth_ack
+	LDA	$D6E1
+	LSR
+	AND	#2
+	ORA	#1
+	STA	$D6E1
+	RTS
+.ENDPROC
+
+; A = packet size to TX (this routine uses 0 as high byte, so the frame size must be < 256 bytes)
+eth_do_tx_short:
+	; Set size
+	STA	$D6E2	; TX size, low byte (given by the caller in A)
+	LDA	#0
+	STA	$D6E3	; TX size, high byte
+eth_do_tx_without_size_setup:
+	CALLBACK_TX
+	; Trigger TX
+	LDA	#1
+	STA	$D6E4	; D6E4 <= 01, triggers TX'ing
+	RTS
+
+
+.RODATA
+
+
+; Using .DBYT is ideal, since it defines a swapped (HI-LO byte order, instead of usual 6502 LO-HI) word size data! What we need in many network-related stuff ...
+; 8 bytes
+arp_req_sample:
+	.DBYT	1	; HTYPE, 1 = ethernet
+	.DBYT	$800	; PTYPE, $800 = IPV4, actually about similar as ethertype field (it mustn't be $806, as it refers to the protocol what is ARP assigned to)
+	.BYTE	6	; HLEN, size of hardware addresses, 6 for ethernet (number of octets in MAC addresses)
+	.BYTE	4	; PLEN, size of protocol addresses, 4 for IPv4, of course
+	.DBYT	1	; OPER, 1 = request, 2 = reply

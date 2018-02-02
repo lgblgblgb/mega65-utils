@@ -1,0 +1,91 @@
+; ** A work-in-progess Mega-65 (Commodore-65 clone origins) emulator
+; ** Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
+; ** Copyright (C)2018 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+;
+; This program is free software; you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation; either version 2 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program; if not, write to the Free Software
+; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+.INCLUDE	"common.i65"
+.CODE
+
+
+; ONLY handles "PING" from ICMP :-O
+
+.PROC	icmp_handle
+
+	; Now force the size check ... Our test program only handles ICMP if total length of the frame
+	; contains eth header + IP header + ICMP header is smaller than 256 byets
+	; Ping'ing with large sizes anyway was used once to kill machines, ie the "good"-old ping-of-death DoS attack, especially if IP becomes fragmented badly
+	; Anyway, I don't think it's particulary useful to have answer for huge pings.
+	LDA	RX_LEN + 1
+	AND	#7		; see the low 3 bits only [thanks, Paul!]
+	BNE	ret		; nope, it's larger that 255 bytes
+
+	; Our IP? Bcast ping etc is ignored for now, it may require other setup than this simple one we use to answer
+	JSR	is_our_ip
+	BNE	ret
+
+	LDA	RX_ETH_PAYLOAD+20
+	CMP	#8		; ICMP echo request?
+	BNE	ret		; from ICMP protocol we supports only ICMP echo requests
+	LDA	RX_ETH_PAYLOAD+21
+	BNE	ret		; ICMP code within a given type, should be zero within '8' (echo request)
+
+	; We want to answer ... :D :D
+
+	LDX	#0
+	JSR	make_reply_frame_eth_header	; create the head of answer in TX buffer type 0 ($0800 it means actually, $08 is always used, X=0)
+
+	; Frankly, just cheating a lot here We copy "some" bytes of data (as we RX only max 255 bytes, let's say that) for IP+ICMP together
+	; from the request, and patch stuff what we need.
+
+	; First, just copy request as the reply as-is (assuming that size < 256!!!)
+	LDX	RX_ETH_PAYLOAD+3	; IP total length.
+clone_loop1:
+	LDA	RX_ETH_PAYLOAD-1,X
+	STA	TX_ETH_PAYLOAD-1,X
+	DEX
+	BNE	clone_loop1
+	; Now, swap source and target IP addresses ...
+	LDX	#3
+clone_loop2:
+	LDA	RX_ETH_PAYLOAD+16,X
+	STA	TX_ETH_PAYLOAD+12,X
+	LDA	RX_ETH_PAYLOAD+12,X
+	STA	TX_ETH_PAYLOAD+16,X
+	DEX
+	BPL	clone_loop2
+
+	; Though, for ICMP header, we have a little of trouble, that we need modify something which affects checksum ...
+	LDA	#0
+	STA	TX_ETH_PAYLOAD+20	; set ICMP type to answer from request, otherwise ICMP part is similar
+	; ... however, as math says about 1(!!)'s complement sum (what the checksum is here), basically checksum can be updated without recalculation,
+	; with adding the difference in case of a modified single word (16 bit based, so ...). Sounds cool enough to implement here :D :D
+	LDA	RX_ETH_PAYLOAD+22
+	CLC
+	ADC	#8			; differnce between old way (was 0 and new one - 8) we want to correct checksum with!
+	STA	TX_ETH_PAYLOAD+22
+	; NO carry end-around!!! fixme, or is it OK?
+
+	; Advance counter of processed "PING" requests PING:000
+	CALLBACK_REPLIED_PING
+
+	; TRANSMIT PARTY TIIIIIIME ;-P
+	LDA	RX_ETH_PAYLOAD+3
+	CLC
+	ADC	#14	; add the size of the ethernet frame header as well
+	JMP	eth_do_tx_short
+ret:
+	RTS
+.ENDPROC

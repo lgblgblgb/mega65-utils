@@ -1,0 +1,235 @@
+; ** A work-in-progess Mega-65 (Commodore-65 clone origins) emulator
+; ** Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
+; ** Copyright (C)2018 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+;
+; This program is free software; you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation; either version 2 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program; if not, write to the Free Software
+; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+.INCLUDE	"common.i65"
+
+.DATA
+
+; Our IPv4 address. If the first digit is '0' then the 'use the last digit only to identify' policy is used.
+; Otherwise, all the octets are compared!!! It's used for pre-DHCP. After a successfull DHCP session,
+; it will be updated to our actual IP address.
+our_ip:
+	.BYTE	0, 0, 0, OUR_IP_LAST_DIGIT
+
+; The IP+UDP header part to create UDP traffic
+; MUST BE 28 bytes, with the exact layout!
+; Leave this pre-initialized (eg do not put into BSS segment or such)
+; see udp_do_tx routine for more comments on this!
+; Unfortunately, CA65 is not smart enough to export things like ipudp_template_ip_size :( to use .SCOPE
+; .STRUCT can be a solution but its syntax is so awkward, and even CA65 documentation states, that
+; syntax will change ..
+
+ipudp_template_start:
+		; *** IP header - 20 bytes ***
+		; this is the part (till UDP header start) what should be checksummed
+		.BYTE	$45	; version number (4) and IHL (5, meaning 5*4=20 bytes, with no IP options)
+		.BYTE	0	; DSCP+ECN
+ipudp_template_ip_size:	.DBYT	0	; full size of IP (ie: header size + payload size, where payload includes UDP header + UDP data too!)
+		.DBYT	0	; identification
+		.DBYT	$4000	; flags (DF set for "don't fragment"), fragment offset zero
+		.BYTE	64	; TTL
+		.BYTE	17	; protocol (UDP)
+ipudp_template_checksum_ip:	.DBYT	0	; checksum of IP header
+ipudp_template_source_ip:	.BYTE   0,0,0,0	; source IP address
+ipudp_template_target_ip:	.BYTE	0,0,0,0	; target IP address
+		; *** UDP header - 8 bytes ***
+ipudp_template_source_port:	.DBYT	0	; source port
+ipudp_template_target_port:	.DBYT	0	; destination port
+ipudp_template_udp_size:	.DBYT	0	; length of UDP header + data (so, 8 + actual udp payload)
+		.DBYT	0	; checksum (in case of UDP, it can be set to zero to disable with IPv4 at least!)
+
+
+.CODE
+
+
+; A wrapper for udp_do_tx
+; What it does: uses the RX buffer to fill some header elements for the answer of that request keeping in mind.
+; That is:
+; * request's target IPv4 addr is copied as reply's source (our IP, to be said a more simple way)
+; * request's source IPv4 addr is copied as reply's target
+; * request's UDP source port is copied as reply's target UDP port
+; * request's UDP target port is copied as reply's source UDP port
+; * Also, ethernet-level header is created (make_reply_frame_eth_header) with ethertype $800 and setting source/target as it shoul dbe (see: make_reply_frame_eth_header)
+; Finally, it just jumps over udp_do_tx, for more work, which includes even the transmission of the whole frame (see that routine)
+; A/X should be the UDP DATA size, with the "short" entry point, only A is needed, and then it should be < 256 bytes of course
+; This routine is not so suitable to reply special cases (not the algorithm described above) or creating new things, not to reply a request
+
+udp_answer_tx_short:
+        LDX     #0
+udp_answer_tx_long:
+	PHX
+	PHA
+	; Get our IP (source) from the request's target IP field
+	MEMCPY	ipudp_template_source_ip, RX_ETH_PAYLOAD+16, 4	; initialize our (source) IP with the destination one from the request ...
+	; We want to answer to the requestor
+	MEMCPY	ipudp_template_target_ip, RX_ETH_PAYLOAD+12, 4	; set target from request's source
+	; Copy ports ...
+	LDA	RX_ETH_PAYLOAD+20	; source port from request
+	LDX	RX_ETH_PAYLOAD+21
+	STA	ipudp_template_target_port
+	STX	ipudp_template_target_port+1
+	LDA	RX_ETH_PAYLOAD+22	; target port from request
+	LDX	RX_ETH_PAYLOAD+23
+	STA	ipudp_template_source_port
+	STX	ipudp_template_source_port+1
+	; Create the ethernet frame header (in the TX buffer itself!)
+	LDX	#0	; ethertype
+	JSR	make_reply_frame_eth_header
+	; Advance our "nice" handled TFTP requests counter
+	;   >> IT HAS BEEN REMOVED, since this routine is a generic UDP stuff not limited to TFTP only
+	; Do the essential of the work, call IP/UDP header construction and eth level transmit as well!
+	PLA
+	PLX
+
+	; **** WARNING: DO NOT PUT ANYTHING HERE CONTROLS FLOWS OVER udp_do_tx below!!!! ****
+
+; Generic IP/UDP packet creator + transmitter!
+; Notes:
+;	* this function does the transmit of frame, so every preparation work mentioned must be done before calling this!
+;	* Ethernet frame header must be done by the caller (if it's a simple answer for the request on RX buffer, it can call 
+;	* payload size of the UDP (UDP data only not the header) must be placed into A(low),X(high) registers on call make_reply_frame_eth_header for example)
+;	* payload must be filled in TX buffer already at the right position (and its size is the A/X reg param actually)
+;	* this function uses a fixed buffer for the IP and UDP header (not in the TX buffer, unlike the data!)
+;	* source and target IP of the IP header must be filled in the buffer (in ipudp_template, that's the buffer)
+;	* source and target UDP port in UDP header must be filled in the buffer
+;	* other things in the buffer should be always the same, no need to init (like IP version+IHL, TTL, protocol, etc)
+;	* some things in the buffer are calculated by this func: IP and UDP size, IP checksum
+;	* currently UDP checksum is NOT calculated. However it's not compulsory to do in IPv4, if we leave that zero value (IP header checksum is compulsory, and we do that!)
+
+udp_do_tx:
+	; Calculate various sizes, a bit boring work ... let's use a macro to make it fancy
+	.MACRO	ADD_CONST8_TO_XA n
+		.LOCAL	no_carry
+		CLC
+		ADC	#n
+		BCC	no_carry
+		INX
+		no_carry:
+	.ENDMACRO
+	; Add 8 bytes for UDP size (field means UDP data + UDP header [8] size)
+	ADD_CONST8_TO_XA 8
+	STX	ipudp_template_udp_size
+	STA	ipudp_template_udp_size+1
+	; Add 20 bytes for IP size (field means IP header [20] + total payload size)
+	ADD_CONST8_TO_XA 20
+	STX	ipudp_template_ip_size
+	STA	ipudp_template_ip_size+1
+	; Add 14 bytes for Ethernet frame size (14 bytes = source mac [6] + target mac [6] + ethertype [2])
+	ADD_CONST8_TO_XA 14
+	STX	$D6E3	; this time, we store the size in the actual TX size regs, we WILL use at the end of this routine
+	STA	$D6E2
+
+	; Now, we should create IP header checksum in some way
+	; This is what I could come with, according to the IP checksum RFC part ...
+	; (1's complement sum's 1's complement) Hopefully it's correct, it seems, but
+	; it's hard to check for all cases when carry occurs or not, etc ...
+	; Now, at least it's easier since we have only 20 bytes to check, also it means
+	; we don't deal with the problem of odd-sized data, because of the checksum being
+	; 16 bit based words otherwise ... Also this routine does decremanted order of
+	; adding, so we can use the same variable for counter/pointer, and still we don't
+	; need CMP as an extra. I'm not sure if it can be done better than this.
+	; Ideally we can even construct answer right in the TX buffer. However the problem,
+	; that we need to also read (for checksum forming)
+
+	LDA	#0
+	STA	ipudp_template_checksum_ip	; we have to zero checksum to do the checksum on it too :)
+	STA	ipudp_template_checksum_ip+1
+	TAY
+	TAZ
+	LDX	#19  ; counter & pointer
+	CLC	; a single CLC! this is not a mistake, we need to "carry that carry" :-) all around in the loop and after! it also means, that you should not mess carry up!
+@checksumming:
+	TYA
+	ADC	ipudp_template_start,X	; add with carry from the previous loop interation (carry-all-around)
+	TAY
+	DEX
+	TZA
+	ADC	ipudp_template_start,X	; add with carry from the ADC above, also produce carry for the next loop iteration (carry-all-around)
+	TAZ
+	DEX
+	BPL	@checksumming
+	; Add the remained carry if any too + get result + store result
+	TYA
+	ADC	#0	; add carry from prev step @ loop
+	EOR	#$FF
+	STA	ipudp_template_checksum_ip + 1
+	TZA
+	ADC	#0	; add carry from prev step above
+	EOR	#$FF
+	STA	ipudp_template_checksum_ip + 0
+
+.if 0
+	; my older "commented out" routine, if the new one is proven to be OK, this .if - .endif part should be removed!
+@checksumming:
+	; low byte (A)
+	CLC
+	ADC	ipudp_template_start,X
+	PHA	; save for now
+	; high byte (Y)
+	DEX
+	TYA
+	ADC	ipudp_template_start,X
+	TAY
+	; check carry situation
+	BCC	:+
+	INZ	; overflows are in Z
+:	PLA
+	DEX
+	BPL	@checksumming
+	; Now. Add Z to A
+	STZ	Z:single_byte_temp
+	CLC
+	ADC	Z:single_byte_temp
+	EOR	#$FF
+	STA	ipudp_template_checksum_ip + 1
+	TYA
+	ADC	#0	; add carry
+	EOR	#$FF
+	STA	ipudp_template_checksum_ip + 0
+.endif
+
+	; Now push the whole stuff to the TX buffer
+	MEMCPY	TX_ETH_PAYLOAD, ipudp_template_start, 28
+	; Do the TX actually! also end of routine
+	JMP	eth_do_tx_without_size_setup	; size setup was already done at near of the beginning of this routine
+
+
+	
+
+; Check, if IP is our IP address
+; X must point the destination (maybe our) IP address relative to the the RX buffer PAYLOAD part.
+; Note, that it used the "our_ip" storage to compare IP with. If there the first byte is zero,
+; then the stupid "check the last digit only" check if performed with the last octet of the
+; stored "our_ip". Otherwise, the full IP address is checked.
+; Output: Z flag
+is_our_ip:
+	LDA	our_ip
+	BEQ	@check_last_digit_only
+	CMP	RX_ETH_PAYLOAD,X
+	BNE	@ret
+	LDA	our_ip+1
+	CMP	RX_ETH_PAYLOAD+1,X
+	BNE	@ret
+	LDA	our_ip+2
+	CMP	RX_ETH_PAYLOAD+2,X
+	BNE	@ret
+@check_last_digit_only:
+	LDA	our_ip+3
+	CMP	RX_ETH_PAYLOAD+3,X
+@ret:
+	RTS

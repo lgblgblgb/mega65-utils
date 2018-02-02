@@ -1,0 +1,121 @@
+; ** A work-in-progess Mega-65 (Commodore-65 clone origins) emulator
+; ** Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
+; ** Copyright (C)2018 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+;
+; This program is free software; you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation; either version 2 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program; if not, write to the Free Software
+; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+.SETCPU		"4510"
+.CODE
+
+.list		on
+.listbytes	unlimited
+
+
+; RX and TX buffer are the same "entity", ie the same address the CPU can only write the TX buffer,
+; but only read the RX buffer. However, on RX, the first two bytes are the received length of the
+; frame. So it can be confusing to take this account when copy things from request to reply for
+; example. That's why I use these symbols instead of addresses.
+; Why these "CPU addresses"? Because MAP opcode maps the required memory range to there ...
+; (Actually, the real ethernet RX/TX buffer cannot be accessed in the usual I/O area, we must
+; map it, using an M65-specific MAP workflow, see the main program)
+
+ETH_MAPPED_TO	= $6800
+
+RX_LEN		= ETH_MAPPED_TO
+RX_BUFFER	= ETH_MAPPED_TO+2
+TX_BUFFER	= ETH_MAPPED_TO
+
+RX_ETH_MAC_DST	= RX_BUFFER
+RX_ETH_MAC_SRC	= RX_BUFFER+6
+RX_ETHERTYPE	= RX_BUFFER+12
+RX_ETH_PAYLOAD	= RX_BUFFER+14
+TX_ETH_MAC_DST	= TX_BUFFER
+TX_ETH_MAC_SRC	= TX_BUFFER+6
+TX_ETHERTYPE	= TX_BUFFER+12
+TX_ETH_PAYLOAD	= TX_BUFFER+14
+
+
+; M65 can be queried (and also set, AFAIK) about its own MAC address, at the I/O area (series of 6 registers @ here)
+; However (maybe I'm using an older bitstream?) currently it seems it doesn't work on M65, so I'll use a constant,
+; see at the end of the program.
+
+OUR_MAC		= $D6E9		; get MAC from the I/O area, M65 can provide us, we use this on TX frames
+;OUR_MAC			= OUR_MAC_GIVEN
+
+
+OUR_IP_LAST_DIGIT	= 65
+
+; This is really "overkill" sometimes to be used in this program, but makes it a bit more simple at least to overview currently ...
+.MACRO	MEMCPY	target, source, bytes
+	LDX	#bytes
+	.LOCAL	@copy
+@copy:
+	LDA	source-1,X
+	STA	target-1,X
+	DEX
+	BNE	@copy
+.ENDMACRO
+
+
+; "Callbacks" (actually macros) used in ethernet.a65 for indication as "UI elements" (counters):
+
+.MACRO	CALLBACK_TX
+	; Some counter, just as some indication for the user how many frames has been sent already by us
+	LDX	#12
+	JSR	ugly_counter
+.ENDMACRO
+
+.MACRO	CALLBACK_REPLIED_ARP
+	; Advance counter for processed ARP requests "ARP:000"
+	LDX	#20
+	JSR	ugly_counter
+.ENDMACRO
+
+; in icmp_ping.a65
+
+.MACRO	CALLBACK_REPLIED_PING
+	LDX	#29
+	JSR	ugly_counter
+.ENDMACRO
+
+
+.GLOBAL ugly_counter
+.GLOBAL show_hex_byte
+.GLOBAL show_hex_digit
+.GLOBAL update_status
+.GLOBAL screen_header
+.GLOBALZP screen_header_length	; this is actually a byte value, not an address, but anyway ...
+
+.GLOBAL	arp_handle
+.GLOBAL	make_reply_frame_eth_header
+.GLOBAL	eth_ack
+.GLOBAL eth_do_tx_short
+.GLOBAL eth_do_tx_without_size_setup
+
+.GLOBAL icmp_handle
+
+.GLOBAL is_our_ip
+.GLOBAL udp_do_tx
+.GLOBAL udp_answer_tx_short
+.GLOBAL udp_answer_tx_long
+; Data
+.GLOBAL ipudp_template_start
+.GLOBAL ipudp_template_ip_size
+.GLOBAL ipudp_template_checksum_ip
+.GLOBAL ipudp_template_source_ip
+.GLOBAL ipudp_template_target_ip
+.GLOBAL ipudp_template_source_port
+.GLOBAL ipudp_template_target_port
+.GLOBAL ipudp_template_udp_size

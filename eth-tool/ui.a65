@@ -1,0 +1,123 @@
+; ** A work-in-progess Mega-65 (Commodore-65 clone origins) emulator
+; ** Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
+; ** Copyright (C)2018 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+;
+; This program is free software; you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation; either version 2 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program; if not, write to the Free Software
+; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+.INCLUDE	"common.i65"
+
+.CODE
+
+
+; Update a three digit decimal counter ON the screen itself!!!
+; must be intiailized to '000'.
+; X must points to the LAST character relative to $400 in scr mem
+ugly_counter:
+	JSR	@proc
+	BCC	@ret
+	JSR	@proc
+	BCC	@ret
+@proc:
+	LDA	$400,X
+	DEX
+	CMP	#'9'
+	BEQ	@nine
+	INA
+	STA	$401,X
+	CLC
+	RTS
+@nine:
+	LDA	#'0'
+	STA	$401,X
+	SEC
+@ret:
+	RTS
+
+
+; A = hex byte to print
+; X = offset from $400 in scr.mem, will be incremeneted
+show_hex_byte:
+	PHA
+	LSR
+	LSR
+	LSR
+	LSR
+	JSR	show_hex_digit
+	PLA
+show_hex_digit:
+	AND	#$0F
+	ORA	#$30
+	CMP	#$3A
+	BCC	@below_a
+	SBC	#$39
+@below_a:
+	STA	$400,X
+	INX
+	RTS
+
+
+update_status:
+	LDX	#120
+	LDY	#7
+	; Reset lower bits of reg '6, to dump some MIIM regs ...
+;	LDA	$D6E6
+;	AND	#$E0
+;	STA	$D6E6
+		; According to Paul, the PHY ID should be set to '1' (three top bits) for the Nexys4 board. I do this here now.
+		LDA	#$20
+		STA	$D6E6
+	; now we can safely (?) increment it, as the reg num is zero
+@showregs:
+	; show reg val!
+	LDA	$D6E8
+	JSR	show_hex_byte
+	LDA	$D6E7
+	JSR	show_hex_byte
+	; increment reg index:
+	INC	$D6E6
+	INX		; space
+	DEY
+	BPL	@showregs
+	; Show our MAC
+	; it should be constant! But anyway as I had problems with reading MAC on M65, we update this all the time!
+	LDX	#44
+	LDY	#0
+@show_own_mac:
+	LDA	OUR_MAC,Y
+	JSR	show_hex_byte
+	INY
+	CPY	#6
+	BNE	@show_own_mac
+	RTS
+
+.RODATA
+
+screen_header:
+	.BYTE $12,$18		; "RX"
+	.BYTE ":000 "		; ... last digit @ 5
+	.BYTE $14,$18		; "TX"
+	.BYTE ":000 "		; ... last digit @ 12
+	.BYTE $01,$12,$10	; "ARP"
+	.BYTE ":000 "		; ... last digit @ 20
+	.BYTE $10,$09,$0E,$07	; "PING"
+	.BYTE ":000 "		; ... last digit @ 29
+	.BYTE $14,$06,$14,$10	; "TFTP"
+	.BYTE ":000"		; ... last digit @ 38
+	.BYTE " "
+	.BYTE $0D,$01,$03	; "MAC"
+	.BYTE ":"
+screen_header_length = .LOBYTE(* - screen_header)
+
+.CODE
