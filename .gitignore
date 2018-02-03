@@ -4,10 +4,7 @@ dump.mem
 a.out
 uart.sock
 debug.log
-*.prg
 *.o
-*.d81
-*.D81
 *.map
 *.sym
 xemu-test.snap

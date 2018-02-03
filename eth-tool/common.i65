@@ -19,8 +19,8 @@
 .SETCPU		"4510"
 .CODE
 
-.list		on
-.listbytes	unlimited
+;.list		on
+;.listbytes	unlimited
 
 
 ; RX and TX buffer are the same "entity", ie the same address the CPU can only write the TX buffer,
@@ -56,6 +56,8 @@ OUR_MAC		= $D6E9		; get MAC from the I/O area, M65 can provide us, we use this o
 
 
 OUR_IP_LAST_DIGIT	= 65
+MONITOR_PORT		= 6510
+
 
 ; This is really "overkill" sometimes to be used in this program, but makes it a bit more simple at least to overview currently ...
 .MACRO	MEMCPY	target, source, bytes
@@ -103,6 +105,8 @@ OUR_IP_LAST_DIGIT	= 65
 .GLOBAL	eth_ack
 .GLOBAL eth_do_tx_short
 .GLOBAL eth_do_tx_without_size_setup
+.GLOBAL create_frame_eth_header_without_dst_mac
+.GLOBAL fill_tx_dst_mac_to_bcast
 
 .GLOBAL icmp_handle
 
@@ -119,3 +123,12 @@ OUR_IP_LAST_DIGIT	= 65
 .GLOBAL ipudp_template_source_port
 .GLOBAL ipudp_template_target_port
 .GLOBAL ipudp_template_udp_size
+
+.GLOBAL	dhcp_send_discovery
+.GLOBAL dhcp_handle_answer
+
+.GLOBAL	tftp_handle_command
+.GLOBAL	tftp_handle_data_or_ack
+.GLOBAL tftp_server_data_port
+
+.GLOBAL	monitor_handle

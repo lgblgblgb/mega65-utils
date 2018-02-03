@@ -19,30 +19,23 @@
 .INCLUDE	"common.i65"
 
 .SEGMENT	"BASICSTUB"
+
 .SCOPE
 	.WORD	:+
 :	.WORD	:+, 2018
-
-;STARTADDR = 2
-;.IF STARTADDR!=1
-;.BYTE STARTADDR
-;.ENDIF
-	.BYTE	$9E ;, "2061"
+	.BYTE	$9E
 	.BYTE	.LOBYTE(start / 1000 + '0')
 	.BYTE	.LOBYTE(start / 100 .MOD 10 + '0')
 	.BYTE	.LOBYTE(start / 10 .MOD 10 + '0')
 	.BYTE	.LOBYTE(start .MOD 10 + '0')
 	.BYTE	0
 :	.WORD	0
-start:
-	JMP	main
 .ENDSCOPE
 
-.CODE
-
+.SEGMENT "INIT"
 
 ; START of our program
-main:
+start:
 	JSR	$E544		; clear screen
 	SEI			; disable interrupts
 
@@ -88,6 +81,10 @@ main:
 	STA	$D610	; we want to delete hw kbd queue
 
 	JSR	eth_ack
+	JMP	main_loop	; do not remove this, another segment follows, maybe not the next address ...
+
+
+.CODE
 
 	; **** START OF OUR MAIN LOOP ****
 
@@ -98,84 +95,45 @@ main_loop:
 	;   LDA #$20
 	; @wait_rx:
 	;   BIT $D6E1
-	;   BNE wait_rx
+	;   BNE @wait_rx
 	;   JSR eth_ack
 	;   ... etc ...
 @wait_rx:
-	; Check keyboard!
-	LDA	$D610
-	BEQ	@no_key
-	STA	$D610
-	PHA
-	LDX	#114
-	JSR	show_hex_byte
-	PLA
-	JSR	key_press
-@no_key:
-
-	; this part can be safely ignored, and deleted
-	JSR	update_status
 	LDA	$D6E1
-	; just a quick test, to print value of $D6E1 ...
-	PHA
-	LDX	#117
-	JSR	show_hex_byte
-	PLA
+	; Called in a waiting for receiving busy-loop
+	; IMPORTANT NOTE: this function *MUST* preseve value of reg A!
+	; If you don't need this functionality, simply remove this JSR,
+	; though in later version it may handle timeouts of retransmission
+	; etc functions as well, when it shouldn't be left out too much ...
+	JSR	rx_callback_on_waiting
 	; check the RX status bit, if we have something
 	AND	#$20
 	BEQ	@wait_rx
 
 ; *** So we have something received.
 
-
 	; ACK RX, move RX buffer to CPU mapped, also allow eth ctrl to receive a new one "meanwhile" (if available)
 	JSR	eth_ack
-	; Some counter, just as some indication for the user how many frames has been received already (any frame, even skipped ones ...)
-	LDX	#5
-	JSR	ugly_counter
-
-	; Just for fun, print the MAC addr of the source and target + ethertype, so user can seen the last received frame's main properties
-	LDX	#80
-	LDY	#0
-@show_src_mac:
-	LDA	RX_ETH_MAC_SRC,Y
-	JSR	show_hex_byte
-	INY
-	CPY	#6
-	BNE	@show_src_mac
-	INX
-	LDY	#0
-@show_dst_mac:
-	LDA	RX_ETH_MAC_DST,Y
-	JSR	show_hex_byte
-	INY
-	CPY	#6
-	BNE	@show_dst_mac
-	INX
-	LDA	RX_ETHERTYPE	; and show ethertype too ...
-	JSR	show_hex_byte
-	LDA	RX_ETHERTYPE+1
-	JSR	show_hex_byte
+	; This callback is called when something is received, note, that parsing the frame itself is not handled in this
+	; callback though, it's mostly for purposes to update the screen state and so on
+	JSR	rx_callback_on_reciving
 	
 	; If first byte of ethertype is not 8, then it's not Ethernet-II frame, or anyway an Ethernet-II frame with payload what we don't support
 	LDA	RX_ETHERTYPE
 	CMP	#$08
 	BNE	main_loop
 
-
 	LDA	RX_ETHERTYPE+1
-	BEQ	maybe_ipv4	; 0? then it should be an IPv4 stuff, with some payload (UDP/ICMP/TCP)
+	BEQ	proto_ipv4	; 0? then it should be an IPv4 stuff, with some payload (UDP/ICMP/TCP)
 	CMP	#$06
 	BNE	main_loop	; not ARP (and neither IPv4), ignore
 
-maybe_arp:
+	; So, must be ARP at this point!
 
 	JSR	arp_handle	; in ethernet.a65
 	JMP	main_loop	; now, back to the business
 
-	; ---- IPv4 related ----
-
-maybe_ipv4:
+proto_ipv4:
 
 	; For IPv4 we only accept IP packets with our IP as target: that also rules out multicast IP, boadcast whatever
 	; Again, no check on MAC level, just on IP.
@@ -184,106 +142,159 @@ maybe_ipv4:
 	; So the decoded functions should have.
 	; Reason: some protocol we want to handle use IPv4 bcast addr for example, what would be ruled out here ...
 
-	LDX	#16		; offset of target IP in the IP header
-	JSR	is_our_ip
-	LBNE	main_loop
+	; NOTE: removed, since we have to process bcast IP as well, for DHCP. So the functions below should check the situation at there own!
+	;LDX	#16		; offset of target IP in the IP header
+	;JSR	is_our_ip
+	;BNE	main_loop
 
 	LDA	RX_ETH_PAYLOAD
 	CMP	#$45		; IPv4, and std IP header size? (Ugly: we ignore packets with options included in the header! ie, IHL field should be '5')
-	LBNE	main_loop
+	BNE	main_loop
 	LDA	RX_ETH_PAYLOAD+6	; flags and a piece of fragment offset field
 	AND	#$FF-$40		; ... only bits other than DF (don't fragment) field, the result must be zero to be supported by us!
-	LBNE	main_loop
+	BNE	main_loop
 	LDA	RX_ETH_PAYLOAD+7	; fragment offset, other half
-	LBNE	main_loop		; if non-zero, it's maybe a fragmented IP datagram, what we're not so much interested in yet.
+	BNE	main_loop		; if non-zero, it's maybe a fragmented IP datagram, what we're not so much interested in yet.
 
 	; Check the protocol, ie the payload of the IP packet, we are interested in UDP or ICMP only.
 	LDA	RX_ETH_PAYLOAD+9
 	CMP	#17		; UDP?
-	LBEQ	maybe_udp	; if it's UDP, go to the handler
+	BEQ	proto_udp	; if it's UDP, go to the handler
 	CMP	#1		; ICMP?
-	LBNE	main_loop	; no ICMP, and it was no UDP either ...
+	BNE	main_loop	; no ICMP, and it was no UDP either ...
 
-maybe_icmp:
+	; So, must be ICMP at the point! Note: we only support icmp echo request and reply for that (aka ping), no other ICMP support right now
+
+	LDX	#16
+	JSR	is_our_ip
+	BNE	main_loop	; we don't want to answer to bcast pings too much at the point ...
 	JSR	icmp_handle	; in icmp_ping.a65
 	JMP	main_loop
 
+proto_udp:
+
+	; First, check for DHCP answers from DHCP servers.
+	; We want to do this first, as it can use bcast IP addr etc
+	; which will be ruled out later to be safe!
+
+	; DHCP offer and ACK from DHCP server: source port=67; destination port=68
+	; 	this uses IPs like 0.0.0.0 and 255.255.255.255
+	;	we currently does not check that and relies on IPs used though just ports
 
 
-example_answer:
-	.DBYT	5 ; OP CODE, 5 = error!
-	.DBYT	2 ; Error code = access violation for 2, just to test
-	.BYTE   "hey dude, this won't work"	; error message
-	.BYTE	0	; close byte for msg
-example_answer_size = * - example_answer
+	LDA	RX_ETH_PAYLOAD+20+3	; A=LOW byte of target port
+	LDX	RX_ETH_PAYLOAD+20+2	; X=HIGH byte of target port
+	BNE	@hi_dest_port	; dst port > 0xFF
+	CMP	#68
+	BEQ	@maybe_dhcp	; if dst port == 68 (still, source port is something we want to check later)
+	CMP	#69
+	BEQ	@tftp_initial	; if dst port == 69
 
+	JMP	main_loop	; we don't know what it can be, simply skip it (below < 0x100 ports, we only expect for 69 and 68)
 
-maybe_udp:
+@maybe_dhcp:			; maybe DHCP, but to have a bit extra care (maybe too much?) we check for the source port as well
 
-	; For UDP, we handles now only the TFTP protocol.
-	; Later, with implementing DHCP we must be careful to check
-	; DHCP condition first: source port = 67, target port = 68
-	; TFTP should be the next, because in that case we can't be
-	; sure about the exact ports: yes, intial packet from client
-	; goes to our port 69, but data packets has "TIDs" for source
-	; and target port as well with values which are dynamic and
-	; not fixed (though I don't thunk low-numbered ports should be
-	; used ever for TIDs, but better to be careful anyway).
+	LDA	RX_ETH_PAYLOAD+20
+	BNE	main_loop
+	LDA	RX_ETH_PAYLOAD+21
+	CMP	#67
+	BNE	main_loop
 
-	; Now do the RX len check!
-	; Here, we *want* to receive eth frames larger than 256 bytes.
-	; But for safety the "delayed" check must be done know, that it
-	; was not a truncated frame or other strange happenings
-	; FIXME TODO this must be done ...
-	; Otherwise if we assume frame is not truncated and we trust
-	; in IP header (not just memory garbage because of short frame?)
-	; it must be OK.
+	; YESSS, DHCP!
+	JSR	dhcp_handle_answer
+	JMP	main_loop
 
+@hi_dest_port:			; No we have left with connecting to UDP ports >= 0x100. Basically we have our monitor and the TFP server for DATA/ACK
 
-	; For TFTP, we have source and target ports. Basically, server
-	; is on port 69, what clients target for initial commands.
-	; However for the actual transfer, there are TIDs (transfer IDs)
-	; realized by UDP ports.
+	CMP	#.LOBYTE(MONITOR_PORT)
+	BNE	@maybe_tftp
+	CPX	#.HIBYTE(MONITOR_PORT)
+	BNE	@maybe_tftp
 
-	; For simplicity we assume, that the first packet coming will grant
-	; access to TFTP for that source IP and denies any other IPs in
-	; the future ... Other client IPs are simply denied (later there
-	; can be a better algorithm, or allow a hot-key to reset this at
-	; least)
+	; It must be our monitor port! But first test if it's really targeting our IP (no bcast etc)
+	LDX	#16
+	JSR	is_our_ip
+	LBNE	main_loop
+	JSR	monitor_handle
+	JMP	main_loop
 
+	; Only possibility left that is TFTP ACK/DATA packets with arbitary ports on "TIDs" (tftp_server_data_port)
+	; Note, that at least tftp_server_data_port+1 should be hold zero if no transfer, so it won't be ever taken
+	; the control, as this code fragment has the control only in case of > 0xFF ports (and we choose server TID
+	; always from the upper port region)
 
-	MEMCPY	TX_ETH_PAYLOAD+28, example_answer, example_answer_size
+@maybe_tftp:
 
-	LDA	#example_answer_size
-	JSR	udp_answer_tx_short
+	CPX	tftp_server_data_port+1
+	LBNE	main_loop
+	CMP	tftp_server_data_port
+	LBNE	main_loop
+	LDX	#16
+	JSR	is_our_ip
+	LBNE	main_loop
+	JSR	tftp_handle_data_or_ack	; though still, source port must be checked by this func though ... (but it's more a TFTP protocol level stuff)
+	JMP	main_loop
+
+@tftp_initial:
+
+	LDX	#16
+	JSR	is_our_ip
+	LBNE	main_loop
+	JSR	tftp_handle_command
 	JMP	main_loop
 
 
-.RODATA
-
-; At UDP payload offset #0
-dhcp_discovery_template_1:
-	.BYTE	1,1,6,0
-	.BYTE	$39,$03,$F3,$26
-	.DBYT	0
-	.DBYT	$8000
-dhcp_discovery_template_1_len = * - dhcp_discovery_template_1
 
 
-; Start with the MAGIC cookie part, which is at UDP payload offset #
-; 11*4+192 = 236
-; This also closed the stuff, so 236 + dhcp_discovery_template_2_len should be the total UDP payload size
-dhcp_discovery_template_2_offset = 236
-dhcp_discovery_template_2:
-	.BYTE	$63,$82,$53,$63	; magic
-	; Now options follows
-	.BYTE $35,$01,$01	; DHCP discovery mode
-	.BYTE $37,$04,$01,$03,$0f,$06	; parameter list
-	.BYTE $FF	; end of options
-dhcp_discovery_template_2_len = * - dhcp_discovery_template_2
 
-.CODE
+; *** this routine must preserve value of reg A! ***
+.PROC	rx_callback_on_waiting
+	PHA
+	LDX	#117
+	JSR	show_hex_byte	; just to show the register value on the screen ...
+	; Check keyboard!
+	LDA	$D610
+	BEQ	no_key
+	STA	$D610
+	PHA
+	LDX	#114
+	JSR	show_hex_byte
+	PLA
+	JSR	key_press
+no_key:
+	JSR	update_status
+	PLA
+	RTS
+.ENDPROC
 
+
+.PROC	rx_callback_on_reciving
+	; Some counter, just as some indication for the user how many frames has been received already (any frame, even skipped ones ...)
+	LDX	#5
+	JSR	ugly_counter
+	; Just for fun, print the MAC addr of the source and target + ethertype, so user can seen the last received frame's main properties
+	LDX	#80
+	LDY	#0
+show_src_mac:
+	LDA	RX_ETH_MAC_SRC,Y
+	JSR	show_hex_byte
+	INY
+	CPY	#6
+	BNE	show_src_mac
+	INX
+	LDY	#0
+show_dst_mac:
+	LDA	RX_ETH_MAC_DST,Y
+	JSR	show_hex_byte
+	INY
+	CPY	#6
+	BNE	show_dst_mac
+	INX
+	LDA	RX_ETHERTYPE	; and show ethertype too ...
+	JSR	show_hex_byte
+	LDA	RX_ETHERTYPE+1
+	JMP	show_hex_byte
+.ENDPROC
 
 
 key_press:
@@ -291,47 +302,7 @@ key_press:
 	BNE	@ret
 	; Send DHCP discovery message
 
-	; we're lazy. This actually makes an invalid eth header for now, but then we need to patch the dst mac for FF:...:FF
-	LDX	#0	; ethertype
-	JSR	make_reply_frame_eth_header
-	LDA	#$FF	; A=FF
-	LDX	#5
-@loop_mac:
-	STA	TX_ETH_MAC_DST,X
-	DEX
-	BPL	@loop_mac
-	; fill in IP header data for source and target IP, that's simply 0.0.0.0 and 255.255.255.255
-	LDY	#0
-	LDX	#3
-	; A is already set to FF
-@ip_addr_loop:
-	STY	ipudp_template_source_ip,X
-	STA	ipudp_template_target_ip,X
-	DEX
-	BPL	@ip_addr_loop
-	; do the ports
-	STY	ipudp_template_target_port
-	STY	ipudp_template_source_port
-	LDA	#67
-	STA	ipudp_template_target_port+1
-	INA
-	STA	ipudp_template_source_port+1
-	; Clear "some" TX UDP payload space, so we don't need initialize to have biiiig template for mostly zeroed space DHCP stuff
-	; 512 bytes is more than enough, thanks!
-	LDX	#0
-	TXA
-@clear_loop:
-	STA	TX_ETH_PAYLOAD+28,X
-	STA	TX_ETH_PAYLOAD+28+$100,X
-	DEX
-	BNE	@clear_loop
-	; Init some DHCP (not UDP/IP header part above) template "fragments" now ...
-	MEMCPY	TX_ETH_PAYLOAD+28, dhcp_discovery_template_1, dhcp_discovery_template_1_len
-	MEMCPY	TX_ETH_PAYLOAD+28+28, OUR_MAC, 6
-	MEMCPY	TX_ETH_PAYLOAD+28+dhcp_discovery_template_2_offset, dhcp_discovery_template_2, dhcp_discovery_template_2_len
-	LDA	#.LOBYTE(dhcp_discovery_template_2_offset+dhcp_discovery_template_2_len)
-	LDX	#.HIBYTE(dhcp_discovery_template_2_offset+dhcp_discovery_template_2_len)
-	JSR	udp_do_tx
+	JSR	dhcp_send_discovery
 @ret:
 	RTS
 

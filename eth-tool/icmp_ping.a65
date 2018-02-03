@@ -32,10 +32,6 @@
 	AND	#7		; see the low 3 bits only [thanks, Paul!]
 	BNE	ret		; nope, it's larger that 255 bytes
 
-	; Our IP? Bcast ping etc is ignored for now, it may require other setup than this simple one we use to answer
-	JSR	is_our_ip
-	BNE	ret
-
 	LDA	RX_ETH_PAYLOAD+20
 	CMP	#8		; ICMP echo request?
 	BNE	ret		; from ICMP protocol we supports only ICMP echo requests

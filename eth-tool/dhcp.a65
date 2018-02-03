@@ -1,0 +1,99 @@
+; ** A work-in-progess Mega-65 (Commodore-65 clone origins) emulator
+; ** Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
+; ** Copyright (C)2018 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+;
+; This program is free software; you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation; either version 2 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program; if not, write to the Free Software
+; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+.INCLUDE	"common.i65"
+
+.CODE
+
+
+.RODATA
+
+; At UDP payload offset #0
+dhcp_discovery_template_1:
+	.BYTE	1,1,6,0
+	.BYTE	$39,$03,$F3,$26
+	.DBYT	0
+	.DBYT	$8000
+dhcp_discovery_template_1_len = * - dhcp_discovery_template_1
+
+
+; Start with the MAGIC cookie part, which is at UDP payload offset #
+; 11*4+192 = 236
+; This also closed the stuff, so 236 + dhcp_discovery_template_2_len should be the total UDP payload size
+dhcp_discovery_template_2_offset = 236
+dhcp_discovery_template_2:
+	.BYTE	$63,$82,$53,$63	; magic
+	; Now options follows
+	.BYTE $35,$01,$01	; DHCP discovery mode
+	.BYTE $37,$04,$01,$03,$0f,$06	; parameter list
+	.BYTE $FF	; end of options
+dhcp_discovery_template_2_len = * - dhcp_discovery_template_2
+
+.CODE
+
+
+; Send DHCP discovery message (bcast)
+; No parameter is needed at all
+; NOTE: later for doing the further steps of DHCP we want modify this to reuse most of the code or such ...
+
+
+.PROC	dhcp_send_discovery
+	; create ethernet header
+	LDX	#0	; ethertype
+	JSR	create_frame_eth_header_without_dst_mac
+	JSR	fill_tx_dst_mac_to_bcast
+	; fill in IP header data for source and target IP, that's simply 0.0.0.0 and 255.255.255.255
+	LDY	#0
+	LDX	#3
+	LDA	#$FF
+ip_addr_loop:
+	STY	ipudp_template_source_ip,X
+	STA	ipudp_template_target_ip,X
+	DEX
+	BPL	ip_addr_loop
+	; do the ports
+	STY	ipudp_template_target_port
+	STY	ipudp_template_source_port
+	LDA	#67
+	STA	ipudp_template_target_port+1
+	INA
+	STA	ipudp_template_source_port+1
+	; Clear "some" TX UDP payload space, so we don't need initialize to have biiiig template for mostly zeroed space DHCP stuff
+	; 512 bytes is more than enough, thanks!
+	LDX	#0
+	TXA
+clear_loop:
+	STA	TX_ETH_PAYLOAD+28,X
+	STA	TX_ETH_PAYLOAD+28+$100,X
+	DEX
+	BNE	clear_loop
+	; Init some DHCP (not UDP/IP header part above) template "fragments" now ...
+	MEMCPY	TX_ETH_PAYLOAD+28, dhcp_discovery_template_1, dhcp_discovery_template_1_len
+	MEMCPY	TX_ETH_PAYLOAD+28+28, OUR_MAC, 6
+	MEMCPY	TX_ETH_PAYLOAD+28+dhcp_discovery_template_2_offset, dhcp_discovery_template_2, dhcp_discovery_template_2_len
+	LDA	#.LOBYTE(dhcp_discovery_template_2_offset+dhcp_discovery_template_2_len)
+	LDX	#.HIBYTE(dhcp_discovery_template_2_offset+dhcp_discovery_template_2_len)
+	JMP	udp_do_tx
+.ENDPROC
+
+
+; TODO
+
+.PROC	dhcp_handle_answer
+	RTS
+.ENDPROC

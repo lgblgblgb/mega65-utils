@@ -37,7 +37,7 @@
 
 	LDX	#24				; offset in ARP request: target IP
 	JSR	is_our_ip			; check if the ARP request is about our IP
-	BNE	ret				; if not, just ignore it, back to the main loop
+	BNE	ret				; if not, just ignore it
 
 	; Ok, now as we assumed it is a valid ARP request at all, let's check it (it can be an **ARP reply**
 	; as well, aka a gratuitous ARP for example, what we can also seen, even if it's not interesting for us)
@@ -91,9 +91,7 @@ ret:
 
 ; X=Ethertype, low byte only (hi is always 8)
 .PROC	make_reply_frame_eth_header
-	LDA	#8
-	STA	TX_ETHERTYPE
-	STX	TX_ETHERTYPE+1
+	JSR	fill_ethertype
 	LDX	#5
 loop:
 	LDA	OUR_MAC,X
@@ -106,6 +104,32 @@ loop:
 .ENDPROC
 
 
+; X=ethertype, low byte only (hi is always 8)
+; This only sets the source mac in TX buffer + ethertype
+.PROC	create_frame_eth_header_without_dst_mac
+	JSR	fill_ethertype
+	MEMCPY	TX_ETH_MAC_SRC, OUR_MAC, 6
+	RTS
+.ENDPROC
+
+
+.PROC	fill_ethertype
+	LDA	#8
+	STA	TX_ETHERTYPE
+	STX	TX_ETHERTYPE+1
+	RTS
+.ENDPROC
+
+
+.PROC	fill_tx_dst_mac_to_bcast
+	LDX	#5
+	LDA	#$FF
+loop:
+	STA	TX_ETH_MAC_DST,X
+	DEX
+	BPL	loop
+	RTS
+.ENDPROC
 
 
 	; * ACK' previous packet (what LSR does, last used buffer by ctrl is moved to the mapped bit), also at the FIRST iteration, it just do some kind of "init" for us
