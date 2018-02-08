@@ -104,6 +104,7 @@ static struct buse_operations aop = {
 static struct {
 	int mtu_size;
 	int sock;
+	int in_progress_msg;
 	unsigned char s_buf[MAX_MTU], *s_p;
 	unsigned char r_buf[MAX_MTU];
 	int s_size, r_size, ans_size_expected, m65_size;
@@ -188,6 +189,7 @@ static int m65_con_init ( const char *hostname, int port )
 	com.debug = 0;
 	com.sdstatus = 0xFF;
 	com.sector = NULL;
+	com.in_progress_msg = 0;
 	printf("Sending to server: (%s) %u.%u.%u.%u:%d with initial MTU of %d bytes ...\n",
 		hostname,
 		server->h_addr[0] & 0xFF,
@@ -242,9 +244,22 @@ static void hex_dump ( unsigned const char *buffer, int size, const char *commen
 }
 
 
+static void already_in_progress_assert ( int should_be, const char *additional_debug_info )
+{
+	if (com.in_progress_msg == should_be)
+		return;
+	fprintf(stderr, "**** FATAL ERROR: com.in_progress_msg should be %d, but we have %d: %s\n",
+		should_be, com.in_progress_msg, additional_debug_info
+	);
+	exit(1);	// is that fatal enough for us? ;-P
+}
+
+
 // Start to construct a new monitor port request
 static void msg_begin ( void )
 {
+	already_in_progress_assert(0, "msg_begin()");
+	com.in_progress_msg = 1;
 	com.s_buf[0] = 0;
 	com.s_buf[1] = 'M';
 	com.s_buf[2] = '6';
@@ -257,6 +272,7 @@ static void msg_begin ( void )
 static int msg_add_readmem ( int m65_addr, int size )
 {
 	int expected_answer_pos;
+	already_in_progress_assert(1, "msg_add_readmem()");
 	expected_answer_pos = com.ans_size_expected;
 	com.ans_size_expected += size;		// answer should contain these amount of bytes!
 	*com.s_p++ = 1;			// command code: read memory
@@ -271,12 +287,14 @@ static int msg_add_readmem ( int m65_addr, int size )
 
 static int msg_add_waitsd ( void )
 {
+	already_in_progress_assert(1, "msg_add_waitsd()");
 	*com.s_p++ = 5;	// command 5, has no params
 	return (com.ans_size_expected++);	// but extends the answer with one byte
 }
 
 static void msg_add_writemem ( int m65_addr, int size, unsigned char *buffer )
 {
+	already_in_progress_assert(1, "msg_add_writemem()");
 	// write does not extend the answer size at all!
 	*com.s_p++ = 2;			// command code: write memory
 	*com.s_p++ = size & 0xFF;		// length low byte
@@ -296,11 +314,13 @@ static int msg_commit ( void )
 	struct timeval tv1, tv2;
 	int retrans_here;
 	fd_set readfds;
+	already_in_progress_assert(1, "msg_commit()");
 	*com.s_p++ = 3;	// close the list of commands!!!!!
 	com.s_size = com.s_p - com.s_buf;	// calculate our request's total size
 	if (com.debug)
 		hex_dump(com.s_buf, com.s_size, "REQUEST TO SEND");
 	gettimeofday(&tv1, NULL);
+	com.in_progress_msg = 0;
 
 	retrans_here = 0;
 retransmit:
@@ -384,12 +404,76 @@ rerecv:
 	return 0;
 }
 
+
+static int sd_reset ( void )
+{
+	unsigned char byteval;
+	int status_index;
+	int save_debug;
+	save_debug = com.debug;
+	//com.debug = 1;
+	printf("Resetting SD ...\n");
+	// Resetting SD is needed after an error, so it can't be a very popular case (in size detection it's done by WILL!)
+	// To simplify things and give some time between reset and end-reset, we simply use TWO network "transactions",
+	// that would be already itself gives something like 500 usec at minimum, but probably even more.
+	// -- send reset --
+	printf("... sending RESET command\n");
+	msg_begin();
+	byteval = 0x00;
+	msg_add_writemem(M65_IO_ADDR(0xD680), 1, &byteval);
+	if (msg_commit()) {
+		fprintf(stderr, "Error while resetting SD ...\n");
+		com.debug = save_debug;
+		return -1;
+	}
+	// -- send end reset --
+	printf("... sending END-RESET command\n");
+	msg_begin();
+	byteval = 0x01;
+	msg_add_writemem(M65_IO_ADDR(0xD680), 1, &byteval);
+	status_index = msg_add_waitsd();
+	if (msg_commit()) {
+		fprintf(stderr, "Error while end-resetting SD ...\n");
+		com.debug = save_debug;
+		return -1;
+	}
+	// -- send a SEPARATE message for status ... ---
+	printf("... query status\n");
+	msg_begin();
+	status_index = msg_add_waitsd();
+	if (msg_commit()) {
+		fprintf(stderr, "Error while querying status byte ...\n");
+		com.debug = save_debug;
+		return -1;
+	}
+	// See what we have ...
+	if ((com.r_buf[status_index] & SD_STATUS_SDHC_FLAG) != com.sdhc) {
+		fprintf(stderr, "Fatal error: SDHC flag changed during reset process!\n");
+		exit(1);	// REALLY FATAL!
+		com.debug = save_debug;
+		return -1;
+	}
+	com.sdstatus = com.r_buf[status_index];
+	if ((com.sdstatus & SD_STATUS_ERROR_MASK)) {
+		fprintf(stderr, "Fatal [??????] error: SD still reports error condition after reset!\n");
+		com.debug = save_debug;
+		return -1;
+	}
+	printf("Reset process seems to be OK, flag = $%02X\n", com.sdstatus);
+	com.debug = save_debug;
+	return 0;
+}
+
+
+
 // This functions asks M65 about the SD-card status to discover the card is SDHC or not
 // It caches the result locally, only used once! Still, this function should be called
 // before EVERY sector read/write, to be sure, we handle SDHC/non-SDHC situation well.
 // Do not worry, as I've stated, the result is cached, won't cause to ask M65 via network
 // every time, only the first time.
 // Retrurn valus is NOT the status, but error condition. com.sdhc is what we're looking for.
+// DO CALL THIS ROUTINE ONLY OUTSIDE OF A MESSAGE CREATION PROCESS! IT CREATES ITS OWN MESSAGE
+// TO GET STATUS!
 static int sd_get_sdhc ( void )
 {
 	int sd_status_index;
@@ -403,6 +487,8 @@ static int sd_get_sdhc ( void )
 	com.sdstatus = com.r_buf[sd_status_index];
 	com.sdhc = (com.sdstatus & SD_STATUS_SDHC_FLAG);
 	printf("SD-card SDHC flag: %s (error condition is: $%02X, full status flag is $%02X)\n", com.sdhc ? "ON" : "OFF", com.sdstatus & SD_STATUS_ERROR_MASK, com.sdstatus);
+	if ((com.sdstatus & SD_STATUS_ERROR_MASK))
+		return sd_reset();
 	return 0;
 }
 
@@ -442,12 +528,19 @@ static int sd_read_sector ( unsigned int sector )
 	if (msg_commit())
 		return -1;
 	com.sdstatus = com.r_buf[sd_status_index];
+	//if ((com.sdstatus & SD_STATUS_ERROR_MASK)) {
+	//	sd_reset();
+	//}
 	if ((com.sdstatus & SD_STATUS_SDHC_FLAG) != com.sdhc) {
 		fprintf(stderr, "Fatal error: SDHC flag has changed?!\n");
 		return -1;
 	}
 	if ((com.sdstatus & SD_STATUS_ERROR_MASK)) {
 		fprintf(stderr, "Cannot read SD-sector, SD controller reported some error condition (status=$%02X)\n", com.sdstatus);
+		if (sd_reset()) {
+			//return -1;
+			return 1;
+		}
 		return 1;
 	} else {
 		// sector buffer is only valid, if status found OK.
@@ -464,7 +557,7 @@ static int sd_get_size ( void )
 		return com.sdsize;	// cached value, if any
 	printf("Detecting card size is in progress ...\n");
 	// Reading sector zero is for just getting SDHC flag, and also initial test, that we can read at all!
-	printf("Reading sector 0 for testing ...");
+	printf("Reading sector 0 for testing ...\n");
 	if (sd_read_sector(0))
 		return -1;
 	if (com.sdhc) {
