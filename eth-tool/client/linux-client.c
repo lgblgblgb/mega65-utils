@@ -30,11 +30,14 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include <netdb.h> 
 #include <errno.h>
 #include <time.h>
+#include <sys/time.h>
 
 
 #define MAX_MTU	1400
-
+#define RETRANSMIT_TIMEOUT_USEC	500000
 #define M65_IO_ADDR(a)    (((a)&0xFFF)|0xFFD3000)
+#define SD_STATUS_SDHC_FLAG 0x10
+#define SD_STATUS_ERROR_MASK (0x40|0x20)
 
 
 static struct {
@@ -43,7 +46,15 @@ static struct {
 	unsigned char s_buf[MAX_MTU], *s_p;
 	unsigned char r_buf[MAX_MTU];
 	int s_size, r_size, ans_size_expected, m65_size;
-} conn;
+	int round_trip_usec;
+	int retransmissions;
+	int retransmit_timeout_usec;
+	int sdhc;
+	int sdsize;
+	int sdstatus;
+	unsigned char *sector;
+	int debug;
+} com;
 
 
 
@@ -52,28 +63,30 @@ static int m65_send ( void *buffer, int len )
 	for (;;) {
 		int ret;
 		socklen_t pl;
-		if (len > conn.mtu_size) {
-			fprintf(stderr, "SEND: Too long message (%d), over PMTU (%d)\n", len, conn.mtu_size);
+		if (len > com.mtu_size) {
+			fprintf(stderr, "SEND: Too long message (%d), over PMTU (%d)\n", len, com.mtu_size);
 			return -1;
 		}
-		//pl = sizeof(conn.serveraddr);
+		//pl = sizeof(com.serveraddr);
 		ret = send(
-			conn.sock,
+			com.sock,
 			buffer,
 			len,
 			0//,
-			//(struct sockaddr *)&conn.serveraddr,
-			//sizeof(conn.serveraddr)
+			//(struct sockaddr *)&com.serveraddr,
+			//sizeof(com.serveraddr)
 		);
 		if (ret == -1) {
+			if (errno == EINTR)
+				continue;
 			if (errno == EMSGSIZE) {
 				// query MTU after an EMSGSIZE error
-				pl = sizeof(conn.mtu_size);
-				if (getsockopt(conn.sock, IPPROTO_IP, IP_MTU, &conn.mtu_size, &pl) == -1) {
+				pl = sizeof(com.mtu_size);
+				if (getsockopt(com.sock, IPPROTO_IP, IP_MTU, &com.mtu_size, &pl) == -1) {
 					perror("SEND: getsockopt(IPPROTO_IP, IP_MTU)");
 					return -1;
 				}
-				printf("SEND: note: MTU is %d bytes\n", conn.mtu_size);
+				printf("SEND: note: MTU is %d bytes\n", com.mtu_size);
 				continue;	// try again!
 			}
 			perror("SEND: sendto() failed");
@@ -94,18 +107,25 @@ static int m65_con_init ( const char *hostname, int port )
 	int val;
 	struct hostent *server;
         struct sockaddr_in serveraddr;
-	conn.sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (conn.sock < 0) {
+	com.sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (com.sock < 0) {
 		perror("Opening socket");
 		return -1;
 	}
 	server = gethostbyname(hostname);
 	if (!server) {
 		fprintf(stderr,"Cannot resolve name '%s' or other error: %s\n", hostname, hstrerror(h_errno));
-		close(conn.sock);
+		close(com.sock);
 		return -1;
 	}
-	conn.mtu_size = MAX_MTU;	// some value ...
+	com.mtu_size = MAX_MTU;	// some value ...
+	com.retransmissions = 0;
+	com.retransmit_timeout_usec = RETRANSMIT_TIMEOUT_USEC;
+	com.sdhc = -1;
+	com.sdsize = -1;
+	com.debug = 0;
+	com.sdstatus = 0xFF;
+	com.sector = NULL;
 	printf("Sending to server: (%s) %u.%u.%u.%u:%d with initial MTU of %d bytes ...\n",
 		hostname,
 		server->h_addr[0] & 0xFF,
@@ -113,7 +133,7 @@ static int m65_con_init ( const char *hostname, int port )
 		server->h_addr[2] & 0xFF,
 		server->h_addr[3] & 0xFF,
 		port,
-		conn.mtu_size
+		com.mtu_size
 	);
 	memset(&serveraddr, 0, sizeof(serveraddr));
 	serveraddr.sin_family = AF_INET;
@@ -121,9 +141,9 @@ static int m65_con_init ( const char *hostname, int port )
 	serveraddr.sin_port = htons(port);
 	// Actually not a "connect" in case of UDP, just to save specify parameters all the
 	// the time at sendto() so we can use send() as well.
-	if (connect(conn.sock, (struct sockaddr *)&serveraddr, sizeof(serveraddr))) {
+	if (connect(com.sock, (struct sockaddr *)&serveraddr, sizeof(serveraddr))) {
 		perror("connect()");
-		close(conn.sock);
+		close(com.sock);
 		return -1;
 	}
 	// Setting PATH MTU discovery. Initial packets may be dropped!
@@ -134,9 +154,9 @@ static int m65_con_init ( const char *hostname, int port )
 	// Note, it can cause to have lost sents at the beginning at least.
 	// We exactly want this, only sending packets are not / cannot be fragmented.
 	val = IP_PMTUDISC_DO;
-	if (setsockopt(conn.sock, IPPROTO_IP, IP_MTU_DISCOVER, &val, sizeof(val)) == -1) {
+	if (setsockopt(com.sock, IPPROTO_IP, IP_MTU_DISCOVER, &val, sizeof(val)) == -1) {
 		perror("setsockopt(sock, IPPROTO_IP, IP_MTU_DISCOVER)");
-		close(conn.sock);
+		close(com.sock);
 		return -1;
 	}
 	return 0;
@@ -163,133 +183,319 @@ static void hex_dump ( unsigned const char *buffer, int size, const char *commen
 // Start to construct a new monitor port request
 static void msg_begin ( void )
 {
-	conn.s_buf[0] = 0;
-	conn.s_buf[1] = 'M';
-	conn.s_buf[2] = '6';
-	conn.s_buf[3] = '5';
-	conn.s_buf[4] = '*';
-	conn.s_p = conn.s_buf + 5;
-	conn.ans_size_expected = 8;	// expected base size is 8:  marker=5 + size=2 + status=1
+	com.s_buf[0] = 0;
+	com.s_buf[1] = 'M';
+	com.s_buf[2] = '6';
+	com.s_buf[3] = '5';
+	com.s_buf[4] = '*';
+	com.s_p = com.s_buf + 5;
+	com.ans_size_expected = 8;	// expected base size is 8:  marker=5 + size=2 + status=1
 }
 
 static int msg_add_readmem ( int m65_addr, int size )
 {
 	int expected_answer_pos;
-	expected_answer_pos = conn.ans_size_expected;
-	conn.ans_size_expected += size;		// answer should contain these amount of bytes!
-	*conn.s_p++ = 1;			// command code: read memory
-	*conn.s_p++ = size & 0xFF;		// length low byte
-	*conn.s_p++ = size >> 8;		// length hi byte
-	*conn.s_p++ = m65_addr & 0xFF;		// 4 byte of M65 address
-	*conn.s_p++ = (m65_addr >> 8) & 0xFF;
-	*conn.s_p++ = (m65_addr >> 16) & 0xFF;
-	*conn.s_p++ = (m65_addr >> 24) & 0x0F;	// only 28 bits on M65
+	expected_answer_pos = com.ans_size_expected;
+	com.ans_size_expected += size;		// answer should contain these amount of bytes!
+	*com.s_p++ = 1;			// command code: read memory
+	*com.s_p++ = size & 0xFF;		// length low byte
+	*com.s_p++ = size >> 8;		// length hi byte
+	*com.s_p++ = m65_addr & 0xFF;		// 4 byte of M65 address
+	*com.s_p++ = (m65_addr >> 8) & 0xFF;
+	*com.s_p++ = (m65_addr >> 16) & 0xFF;
+	*com.s_p++ = (m65_addr >> 24) & 0x0F;	// only 28 bits on M65
 	return expected_answer_pos;
 }
 
 static int msg_add_waitsd ( void )
 {
-	*conn.s_p++ = 5;	// command 5, has no params
-	return (conn.ans_size_expected++);	// but extends the answer with one byte
+	*com.s_p++ = 5;	// command 5, has no params
+	return (com.ans_size_expected++);	// but extends the answer with one byte
 }
 
 static void msg_add_writemem ( int m65_addr, int size, unsigned char *buffer )
 {
 	// write does not extend the answer size at all!
-	*conn.s_p++ = 2;			// command code: write memory
-	*conn.s_p++ = size & 0xFF;		// length low byte
-	*conn.s_p++ = size >> 8;		// length hi byte
-	*conn.s_p++ = m65_addr & 0xFF;		// 4 byte of M65 address
-	*conn.s_p++ = (m65_addr >> 8) & 0xFF;
-	*conn.s_p++ = (m65_addr >> 16) & 0xFF;
-	*conn.s_p++ = (m65_addr >> 24) & 0x0F;	// only 28 bits on M65
+	*com.s_p++ = 2;			// command code: write memory
+	*com.s_p++ = size & 0xFF;		// length low byte
+	*com.s_p++ = size >> 8;		// length hi byte
+	*com.s_p++ = m65_addr & 0xFF;		// 4 byte of M65 address
+	*com.s_p++ = (m65_addr >> 8) & 0xFF;
+	*com.s_p++ = (m65_addr >> 16) & 0xFF;
+	*com.s_p++ = (m65_addr >> 24) & 0x0F;	// only 28 bits on M65
 	// Now also add the data as well to be written on the M65 size
 	// dangerous: zero should be currently NOT used!
-	memcpy(conn.s_p, buffer, size);
-	conn.s_p += size;
+	memcpy(com.s_p, buffer, size);
+	com.s_p += size;
 }
 
-static int msg_commit ( int debug )
+static int msg_commit ( void )
 {
-	*conn.s_p++ = 3;	// close the list of commands!!!!!
-	conn.s_size = conn.s_p - conn.s_buf;	// calculate our request's total size
-	if (debug)
-		hex_dump(conn.s_buf, conn.s_size, "REQUEST TO SEND");
+	struct timeval tv1, tv2;
+	int retrans_here;
+	fd_set readfds;
+	*com.s_p++ = 3;	// close the list of commands!!!!!
+	com.s_size = com.s_p - com.s_buf;	// calculate our request's total size
+	if (com.debug)
+		hex_dump(com.s_buf, com.s_size, "REQUEST TO SEND");
+	gettimeofday(&tv1, NULL);
+
+	retrans_here = 0;
+retransmit:
+
 	// SEND. FIXME: maybe we should use select() and non blocking I/O to detect OS problem(s) on sending?
-	if (m65_send(conn.s_buf, conn.s_size) <= 0) {
+	if (m65_send(com.s_buf, com.s_size) <= 0) {
 		fprintf(stderr, "m65_send() returned with error :-(\n");
 		return -1;
 	}
-	// Receive answer.
-	// Note: monitor MUST always receive. We can't send newer if it's not the case!
-	// We should re-transmit our request on some certain timeout, TODO FIXME
-	conn.r_size = recv(conn.sock, conn.r_buf, conn.mtu_size, 0);
-	if (conn.r_size < 0) {
+
+	// Receive answer, with timeout.
+	// Note: monitor MUST always reply and we want that to notice! We can't send newer if it's not the case!
+	// We should re-transmit our request on some certain timeout.
+	// It's ugly now, maybe proper non-blocking I/O should be used, not blocking I/O + select() ...
+	// According my performance test, reading 1000 sectors, no retransmission was needed (ie no UDP packet lost)
+	// so maybe it's more a robust-stuff, rather than too much needed, but anyway.
+
+reselect:
+
+	tv2.tv_sec = 0;
+	tv2.tv_usec = com.retransmit_timeout_usec;
+	FD_ZERO(&readfds);
+	FD_SET(com.sock, &readfds);
+	if (select(com.sock + 1, &readfds, NULL, NULL, &tv2) < 0) {
+		if (errno == EINTR)
+			goto reselect;
+		perror("select()");
+		return -1;
+	}
+	if (!FD_ISSET(com.sock, &readfds)) {
+		com.retransmissions++;
+		retrans_here++;
+		if (com.debug)
+			printf("Receive timed out, retransmission (#%d) of the request ...\n", retrans_here);
+		goto retransmit;
+	}
+	// *** receive ***
+
+rerecv:
+
+	com.r_size = recv(com.sock, com.r_buf, com.mtu_size, 0);
+	gettimeofday(&tv2, NULL);
+	com.round_trip_usec = (tv2.tv_sec - tv1.tv_sec) * 1000000 + (tv2.tv_usec - tv1.tv_usec);
+	if (com.debug)
+		printf("Request-answer round-trip in msecs: %f\n", com.round_trip_usec / 1000.0);
+	if (com.r_size < 0) {
+		if (errno == EINTR)
+			goto rerecv;
 		perror("recv()");
 		return -1;
 	}
-	if (conn.r_size == 0) {
+	if (com.r_size == 0) {
 		fprintf(stderr, "recv() returned with zero size!\n");
 		return -1;
 	}
-	if (debug)
-		hex_dump(conn.r_buf, conn.r_size, "RECEIVED ANSWER");
-	if (conn.r_size < 8) {
-		fprintf(stderr, "Abnormally short answer, at least 8 bytes, we got %d\n", conn.r_size);
+	if (com.debug)
+		hex_dump(com.r_buf, com.r_size, "RECEIVED ANSWER");
+	if (com.r_size < 8) {
+		fprintf(stderr, "Abnormally short answer, at least 8 bytes, we got %d\n", com.r_size);
 		return -1;
 	}
-	if (conn.r_buf[0] || conn.r_buf[1] != 'M' || conn.r_buf[2] != '6' || conn.r_buf[3] != '5' || conn.r_buf[4] != '*') {
+	if (com.r_buf[0] || com.r_buf[1] != 'M' || com.r_buf[2] != '6' || com.r_buf[3] != '5' || com.r_buf[4] != '*') {
 		fprintf(stderr, "Magic marker cannot be found in the answer!\n");
 		return -1;
 	}
-	conn.m65_size = conn.r_buf[5] + (conn.r_buf[6] << 8);
-	if (conn.m65_size != conn.r_size) {
-		fprintf(stderr, "Internal mismtach, received size (%d) is not the same what the answer states (%d) to be\n", conn.r_size, conn.m65_size);
+	com.m65_size = com.r_buf[5] + (com.r_buf[6] << 8);
+	if (com.m65_size != com.r_size) {
+		fprintf(stderr, "Internal mismtach, received size (%d) is not the same what the answer states (%d) to be\n", com.r_size, com.m65_size);
 		return -1;
 	}
-	if (conn.r_buf[7]) {
-		fprintf(stderr, "M65 reports error, error code = $%02X\n", conn.r_buf[7]);
+	if (com.r_buf[7]) {
+		fprintf(stderr, "eth-tool monitor on M65 reports error, error code = $%02X\n", com.r_buf[7]);
 		return -1;
 	}
-	if (conn.r_size != conn.ans_size_expected) {
-		fprintf(stderr, "answer size mismatch, got %d bytes, request expected %d bytes as answer\n", conn.r_size, conn.ans_size_expected);
+	if (com.r_size != com.ans_size_expected) {
+		fprintf(stderr, "answer size mismatch, got %d bytes, request expected %d bytes as answer\n", com.r_size, com.ans_size_expected);
 		return -1;
 	}
-	if (debug)
+	if (com.debug)
 		printf("WOW, answer seems to be OK ;-)\n");
+	return 0;
+}
+
+// This functions asks M65 about the SD-card status to discover the card is SDHC or not
+// It caches the result locally, only used once! Still, this function should be called
+// before EVERY sector read/write, to be sure, we handle SDHC/non-SDHC situation well.
+// Do not worry, as I've stated, the result is cached, won't cause to ask M65 via network
+// every time, only the first time.
+// Retrurn valus is NOT the status, but error condition. com.sdhc is what we're looking for.
+static int sd_get_sdhc ( void )
+{
+	int sd_status_index;
+	if (com.sdhc != -1)
+		return 0;
+	printf("Sending message to read SD-status for the SDHC flag ...\n");
+	msg_begin();
+	sd_status_index = msg_add_waitsd();
+	if (msg_commit())
+		return -1;
+	com.sdstatus = com.r_buf[sd_status_index];
+	com.sdhc = (com.sdstatus & SD_STATUS_SDHC_FLAG);
+	printf("SD-card SDHC flag: %s (error condition is: $%02X, full status flag is $%02X)\n", com.sdhc ? "ON" : "OFF", com.sdstatus & SD_STATUS_ERROR_MASK, com.sdstatus);
+	return 0;
+}
+
+
+static int sd_read_sector ( unsigned int sector )
+{
+	unsigned char buffer[6];
+	int sd_status_index, sd_data_index;
+	com.sector = NULL;
+	// sets com.sdhc, if it wasn't before
+	if (sd_get_sdhc())
+		return -1;
+	// We always want to use plain sector addressing.
+	// So, we check SDHC bit of status, and if it is not set,
+	// we convert "sector" to byte addressing here. The caller
+	// of this function doesn't need to know anoything this
+	if (!com.sdhc) {
+		if (sector >= 0x800000) {
+			fprintf(stderr, "Reading sector %X would result in invalid byte offset in non-SDHC mode!\n", sector);
+			return -1;
+		}
+		sector <<= 9U;
+	}
+	buffer[0] = sector & 0xFF;
+	buffer[1] = (sector >> 8) & 0xFF;
+	buffer[2] = (sector >> 16) & 0xFF;
+	buffer[3] = (sector >> 24) & 0xFF;
+	buffer[4] = 2;		// read block command for M65 SD controller
+	//buffer[5] = 1;		// end reset??????
+	msg_begin();
+	//msg_add_writemem(M65_IO_ADDR(0xD680), 1, buffer + 5);	// end reset???
+	msg_add_writemem(M65_IO_ADDR(0xD681), 4, buffer);
+	msg_add_writemem(M65_IO_ADDR(0xD680), 1, buffer + 4);
+	sd_status_index = msg_add_waitsd();
+	// we want to read the SD-card buffer now (even there is an error - see status -, then we don't use it, but better than using TWO messages/transmission rounds ...)
+	sd_data_index = msg_add_readmem(0xFFD6E00, 512);
+	if (msg_commit())
+		return -1;
+	com.sdstatus = com.r_buf[sd_status_index];
+	if ((com.sdstatus & SD_STATUS_SDHC_FLAG) != com.sdhc) {
+		fprintf(stderr, "Fatal error: SDHC flag has changed?!\n");
+		return -1;
+	}
+	if ((com.sdstatus & SD_STATUS_ERROR_MASK)) {
+		fprintf(stderr, "Cannot read SD-sector, SD controller reported some error condition (status=$%02X)\n", com.sdstatus);
+		return 1;
+	} else {
+		// sector buffer is only valid, if status found OK.
+		com.sector = com.r_buf + sd_data_index;
+		return 0;
+	}
+}
+
+
+static int sd_get_size ( void )
+{
+	unsigned int mask, size;
+	if (com.sdsize != -1)
+		return com.sdsize;	// cached value, if any
+	printf("Detecting card size is in progress ...\n");
+	// Reading sector zero is for just getting SDHC flag, and also initial test, that we can read at all!
+	printf("Reading sector 0 for testing ...");
+	if (sd_read_sector(0))
+		return -1;
+	if (com.sdhc) {
+		//mask = 0x80000000U;
+		mask = 0x2000000U;
+	} else {
+		mask = 0x200000;
+		printf("Starting from non-SDHC max\n");
+	}
+	size = 0;
+	while (mask) {
+		int r;
+		printf("DETECT: trying to read sector $%X ...\n", size | mask);
+		r = sd_read_sector(size | mask);
+		if (r < 0) {
+			fprintf(stderr, "Communication error while detecting SD-card size!\n");
+			return -1;
+		}
+		if (r == 0)
+			size |= mask;
+		mask >>= 1U;
+	}
+	printf("Detected card size $%X (%u) max readable sector, $%X (%u) sectors in total ~ %d Mbyte\n",
+		size, size, size+1, size+1,  (size+1) >> 11
+	);
+	com.sdsize = size + 1;
 	return 0;
 }
 
 
 
-static int sdtest ( void )
+
+#define PERFORMANCE_TEST_SECTORS 1000
+
+static int cli_sdtest ( void )
 {
-	int sd_status_index, sd_data_index;
-	unsigned char buffer[5];
-	buffer[0] = buffer[1] = buffer[2] = buffer[3] = 0;	// sector zero
-	buffer[4] = 2;	// read a block!
-	msg_begin();
-	msg_add_writemem(M65_IO_ADDR(0xD681), 4, buffer);	// write SD sector registers
-	msg_add_writemem(M65_IO_ADDR(0xD680), 1, buffer + 4);	// instruct SD-card controller (command)
-	sd_status_index = msg_add_waitsd();		// instruct monitor to wait SD-card to be ready, and it will give back the status as well
-	// we want to read the SD-card buffer now (even there is an error - status -, then we don't use it, but better than using TWO messages/transmission round ...)
-	sd_data_index = msg_add_readmem(0xFFD6E00,512);
-	if (msg_commit(1))
-		return -1;
-	printf("Received SD-card status register: $%02X\n", conn.r_buf[sd_status_index]);
-	hex_dump(conn.r_buf + sd_data_index, 512, "SD-CARD's boot record, ONLY VALID IF STATUS IS OK");
-	return 1;
+	int sector;
+	int usec;
+	com.debug = 0;
+	for (sector = 0; sector <= 1; sector++) {
+		int r;
+		printf("*** READING SECTOR %d ***\n", sector);
+		r = sd_read_sector(sector);
+		if (r)
+			return -1;
+		printf("Received SD-card status register: $%02X\n", com.sdstatus);
+		if (com.sector)
+			hex_dump(com.sector, 512, "READ SECTOR");
+		else {
+			fprintf(stderr, "Bad status ($%02X), M65 SD-card controller reported error condition.\n", com.sdstatus);
+			return -1;
+		}
+	}
+	// performance test of reading
+	printf("Running performance test [with reading %d sectors].\nPlease stand by ...\n", PERFORMANCE_TEST_SECTORS);
+	usec = 0;
+	for (sector = 0; sector < PERFORMANCE_TEST_SECTORS; sector++) {
+		int r = sd_read_sector(sector);
+		if (r < 0) {
+			fprintf(stderr, "Error during performance test communication @ sector %d\n", sector);
+			return -1;
+		}
+		if (!com.sector || r > 0) {
+			fprintf(stderr, "Error during SD-card reading on M65 @ sector %d\n", sector);
+			return -1;
+		}
+		usec += com.round_trip_usec;
+	}
+	printf("DONE.\nSectors read: %d\nTotal number of retransmissions: %d\nSeconds: %f\nSectors/second: %f\nKilobytes/second: %f\n",
+		PERFORMANCE_TEST_SECTORS,
+		com.retransmissions,
+		usec / 1000000.0,
+		PERFORMANCE_TEST_SECTORS / ((float)usec / 1000000.0),
+		PERFORMANCE_TEST_SECTORS / ((float)usec / 1000000.0) * 512.0 / 1024.0
+	);
+	return 0;
+}
+
+
+static int cli_sdsizetest ( void )
+{
+	return sd_get_size();
 }
 
 
 
-
-static int memtest ( void )
+static int cli_memtest ( void )
 {
 	time_t t = time(NULL);
 	struct tm *tm_p;
 	int i, ans;
 	unsigned char buf[41];
+	com.debug = 1;	// turn debug ON
 	tm_p = localtime(&t);
 	if (!tm_p) {
 		perror("localtime()");
@@ -304,11 +510,11 @@ static int memtest ( void )
 	msg_begin();	// start to construct a new message for M65
 	msg_add_writemem(2016, i, buf);	// injecting the current time into the C64 screen mem!
 	ans = msg_add_readmem(1024, 40);		// also, we want to see the first line of the C64 screen
-	if (msg_commit(1))	// commit with debug
+	if (msg_commit())	// commit message + wait answer
 		return -1;
 	printf("We've read out the first line of your screen  ");
 	for (i = 0; i < 40; i++) {
-		char c = conn.r_buf[ans++] & 0x7F;
+		char c = com.r_buf[ans++] & 0x7F;
 		if (c < 32)
 			c += 64;
 		putchar(c);
@@ -322,6 +528,7 @@ static int memtest ( void )
 
 int main ( int argc, char **argv )
 {
+	int r;
 	if (argc < 4) {
 		fprintf(stderr, "Bad usage: %s hostname portnumber COMMAND [possible command parameters]\n", argv[0]);
 		return 1;
@@ -332,11 +539,15 @@ int main ( int argc, char **argv )
 	}
 	printf("Entering into communication state.\n");
 	if (!strcmp(argv[3], "test"))
-		memtest();
+		r = cli_memtest();
 	else if (!strcmp(argv[3], "sdtest"))
-		sdtest();
-	else
+		r = cli_sdtest();
+	else if (!strcmp(argv[3], "sdsizetest"))
+		r = cli_sdsizetest();
+	else {
 		fprintf(stderr, "Unknown command \"%s\"\n", argv[3]);
-	close(conn.sock);
-	return 0;
+		r = 1;
+	}
+	close(com.sock);
+	return r ? 1 : 0;
 }

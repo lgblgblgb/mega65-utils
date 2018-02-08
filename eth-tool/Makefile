@@ -44,11 +44,11 @@ $(PRG):	$(OBJECTS)
 	$(LD65) $(LD65FLAGS) -o $@ $(OBJECTS)
 
 bin/$(PRG).prg.gz: $(PRG)
-	gzip -9 < $(PRG) > bin/$(PRG).prg.gz.tmp
+	gzip -9 -n < $(PRG) > bin/$(PRG).prg.gz.tmp
 	mv bin/$(PRG).prg.gz.tmp bin/$(PRG).prg.gz
 
 bin/$(DISKIMAGE).gz: $(DISKIMAGE)
-	gzip -9 < $(DISKIMAGE) > bin/$(DISKIMAGE).gz.tmp
+	gzip -9 -n < $(DISKIMAGE) > bin/$(DISKIMAGE).gz.tmp
 	mv bin/$(DISKIMAGE).gz.tmp bin/$(DISKIMAGE).gz
 
 distribute: $(TARGETS)

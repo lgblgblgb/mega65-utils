@@ -2,6 +2,14 @@
 
 Currently, it's a Linux-specific client.
 
+**Current supported command line only**:
+
+    m65-client IP-address PORT test
+    m65-client IP-address PORT sdtest
+    m65-client IP-address PORT sdsizetest
+
+**IGNORE** the rest of this README for now!
+
 ## Command line syntax:
 
     m65-client IP-address PORT COMMAND (possible command parameters)
