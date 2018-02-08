@@ -1,12 +1,13 @@
+# Really lame Makefile just for the purpose ...
+
 PRG	= m65-client
-SRC	= linux-client.c
 CC	= gcc
-CFLAGS	= -O3 -Wall
+CFLAGS	= -O2 -Wall -I.
 
 all:	$(PRG)
 
-$(PRG): $(SRC)
-	gcc -o $(PRG) $(CFLAGS) $<
+$(PRG): buse.c linux-client.c buse.h Makefile
+	gcc -o $(PRG) $(CFLAGS) buse.c linux-client.c
 
 clean:
 	rm -f $(PRG) *.o

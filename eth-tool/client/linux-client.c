@@ -3,6 +3,8 @@
 	** Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
 	** Copyright (C)2018 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
+*** Also uses code from BUSE, see source file buse.c
+
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License, or
@@ -31,6 +33,9 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include <errno.h>
 #include <time.h>
 #include <sys/time.h>
+#ifdef USE_BUSE
+#include "buse.h"
+#endif
 
 
 #define MAX_MTU	1400
@@ -38,6 +43,62 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #define M65_IO_ADDR(a)    (((a)&0xFFF)|0xFFD3000)
 #define SD_STATUS_SDHC_FLAG 0x10
 #define SD_STATUS_ERROR_MASK (0x40|0x20)
+
+
+#ifdef USE_BUSE
+static int nbd_op_read(void *buf, u_int32_t len, u_int64_t offset, void *userdata)
+{
+	if (*(int *)userdata)
+		fprintf(stderr, "R - %lu, %u\n", offset, len);
+	memcpy(buf, (char *)data + offset, len);
+	return 0;
+}
+
+static int nbd_op_write(const void *buf, u_int32_t len, u_int64_t offset, void *userdata)
+{
+	if (*(int *)userdata)
+		fprintf(stderr, "W - %lu, %u\n", offset, len);
+	memcpy((char *)data + offset, buf, len);
+	return 0;
+}
+
+static void nbd_op_disc(void *userdata)
+{
+	(void)(userdata);
+	fprintf(stderr, "Received a disconnect request.\n");
+}
+
+static int nbd_op_flush(void *userdata)
+{
+	(void)(userdata);
+	fprintf(stderr, "Received a flush request.\n");
+	return 0;
+}
+
+static int nbd_op_trim(u_int64_t from, u_int32_t len, void *userdata)
+{
+	(void)(userdata);
+	fprintf(stderr, "T - %lu, %u\n", from, len);
+	return 0;
+}
+
+
+static struct buse_operations aop = {
+	.read = nbd_op_read,
+	.write = nbd_op_write,
+	.disc = nbd_op_disc,
+	.flush = nbd_op_flush,
+	.trim = nbd_op_trim,
+	// either set size, OR set both blksize and size_blocks
+	//.size = 128 * 1024 * 1024,
+	// either set size, OR set both blksize and size_blocks
+	// LGB: according to my test, everything should be set if blksize is set, or segfault happens!
+	.blksize = 512,
+	.size_blocks = 512 * 1024,
+	.size = 512*512*1024
+};
+#endif
+
 
 
 static struct {
@@ -55,6 +116,7 @@ static struct {
 	unsigned char *sector;
 	int debug;
 } com;
+
 
 
 
@@ -429,6 +491,12 @@ static int sd_get_size ( void )
 		size, size, size+1, size+1,  (size+1) >> 11
 	);
 	com.sdsize = size + 1;
+#ifdef USE_BUSE
+        // LGB: according to my test, everything should be set if blksize is set, or segfault happens!
+	aop.blksize = 512;
+	aop.size_blocks = com.sdsize;
+	aop.size = (u_int64_t)aop.blksize * (u_int64_t)aop.size_blocks;
+#endif
 	return 0;
 }
 
@@ -488,6 +556,38 @@ static int cli_sdsizetest ( void )
 }
 
 
+static int cli_memdump ( void )
+{
+	FILE *fp;
+	int addr;
+	unsigned char mem[0x40000];
+	int usec = 0;
+	for (addr = 0; addr < sizeof mem; addr += 1024) {
+		int mem_index;
+		msg_begin();
+		mem_index = msg_add_readmem(addr, 1024);	// we transfer 1K at once. Hopefully it fits into the MTU, it should be on ethernet LAN at least ...
+		if (msg_commit())
+			return -1;
+		memcpy(mem + addr, com.r_buf + mem_index, 1024);
+		usec += com.round_trip_usec;
+	}
+	printf("WOW! Dump is completed, %d retransmission was needed, avg transfer rate is %f Kbytes/sec.\n", com.retransmissions,
+		sizeof(mem)*1000000 / (float)usec / 1024.0
+	);
+	fp = fopen("mem.dmp", "wb");
+	if (!fp) {
+		perror("Cannot create file");
+		return -1;
+	}
+	if (fwrite(mem, sizeof mem, 1, fp) != 1) {
+		fclose(fp);
+		fprintf(stderr, "Cannot write file, target can be incomplete!\n");
+		return -1;
+	}
+	fclose(fp);
+	return 0;
+}
+
 
 static int cli_memtest ( void )
 {
@@ -544,6 +644,8 @@ int main ( int argc, char **argv )
 		r = cli_sdtest();
 	else if (!strcmp(argv[3], "sdsizetest"))
 		r = cli_sdsizetest();
+	else if (!strcmp(argv[3], "memdump"))
+		r = cli_memdump();
 	else {
 		fprintf(stderr, "Unknown command \"%s\"\n", argv[3]);
 		r = 1;

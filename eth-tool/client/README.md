@@ -1,12 +1,48 @@
 # Simple client for eth-tool's "monitor port"
 
-Currently, it's a Linux-specific client.
+Currently, it's a Linux-specific client. It also contains code from the "BUSE" project,
+see here: https://github.com/acozzette/BUSE
 
-**Current supported command line only**:
+**Current supported command line only in the test phase as examples**:
 
-    m65-client IP-address PORT test
-    m65-client IP-address PORT sdtest
-    m65-client IP-address PORT sdsizetest
+Little test, injects actual time onto your M65 screen, and also grabbing the first line of M65 screen:
+
+    ./m65-client 192.168.0.65 6510 test
+    $ ./m65-client 192.168.0.65 6510 test
+    Sending to server: (192.168.0.65) 192.168.0.65:6510 with initial MTU of 1400 bytes ...
+    Entering into communication state.
+    DUMP[REQUEST TO SEND; 28 bytes]:
+      0000   00 4D 36 35 2A 02 08 00 E0 07 00 00 32 31 3A 33
+      0010   36 3A 32 38 01 28 00 00 04 00 00 03
+    Request-answer round-trip in msecs: 0.344000
+    DUMP[RECEIVED ANSWER; 48 bytes]:
+      0000   00 4D 36 35 2A 30 00 00 12 18 3A 38 33 38 20 14
+      0010   18 3A 37 31 35 20 01 12 10 3A 30 30 39 20 10 09
+      0020   0E 07 3A 30 30 30 20 14 06 14 10 3A 30 30 30 20
+    WOW, answer seems to be OK ;-)
+    We've read out the first line of your screen  RX:838 TX:715 ARP:009 PING:000 TFTP:000 
+    Well, the screen code conversion is not perfect though in this client :-)
+    Also, we've injected the current local time on your PC to your M65 screen.
+
+Reads the first two sectors of your SD card, then doing a performance test with reading 1000 sectors:
+
+    ./m65-client 192.168.0.65 6510 sdtest
+    ....
+
+SD-card size detection, dictated by the client:
+
+    ./m65-client 192.168.0.65 6510 sdsizetest
+
+    This is **the problem** ... It creates errors (by will) which then "stuck" and no SD works any more :(
+
+Dumping 256K memory (fast+chip RAM) into mem.dmp:
+
+    $ ./m65-client 192.168.0.65 6510 memdump
+    Sending to server: (192.168.0.65) 192.168.0.65:6510 with initial MTU of 1400 bytes ...
+    Entering into communication state.
+    WOW! Dump is completed, 0 retransmission was needed, avg transfer rate is 790.360107 Kbytes/sec.
+    $ ls -l mem.dmp 
+    -rw-r--r-- 1 lgb lgb 262144 Feb  8 21:34 mem.dmp
 
 **IGNORE** the rest of this README for now!
 
