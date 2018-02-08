@@ -72,7 +72,7 @@ default_user_callback = mon_mem_copy_param_fetch::ret
 	LDY	#4	; yes, "magic" checking is in backwards ...
 :	LDA	(mon_in),Z
 	CMP	magic,Y
-	BNE	text_mode_protocol	; check failed, maybe text mode protocol is used
+	LBNE	text_mode_protocol	; check failed, maybe text mode protocol is used
 	STA	(mon_out),Z
 	INW	mon_in			; yes, using INW seems to be overkill, but you'll see later things complicated when we need to get/fetch objects with given size, etc
 	INW	mon_out
@@ -94,6 +94,7 @@ default_user_callback = mon_mem_copy_param_fetch::ret
 	;	2 = write memory: params: LENGTH as word, DWORD as 32 bit linear M65 address, then LENGTH number of bytes what you want to write to the selected address
 	;	3 = end of request marker
 	;	4 = call user machine code function: params: ADDR as _WORD_, and it's CPU address!! [call will happen after sending the answer back, thus the code can't pass info back in the same call]
+	;	5 = wait till SD-card is busy (saves us to do the check in a loop over the Net again and again ...). NO parameter, it waits, answer is expanded with a single byte, the original status read
 	;
 	; The answer is also starts with the mentioned 5 bytes marker. Then a WORD follows, describing the length of the answer INCLUDING markers, the size itself, and everything!
 	; Then a BYTE follows, which is the error code. If it's non-zero, that's an ERROR!!!
@@ -130,6 +131,8 @@ command_loop:
 	BEQ	cmd_end		; command byte was '3'
 	DEA
 	BEQ	cmd_call	; command byte was '4'
+	DEA
+	BEQ	cmd_sdwait	; command byte was '5'
 	; Illegal command detected!
 	LDA	#2
 	BRA	answer			; answer with error code '2'
@@ -139,6 +142,16 @@ command_loop:
 	; CPU addresses, which is MAP'ed and should be converted into linear addressing, then also correct
 	; the pointers if done by DMA instead and so on ... Maybe this will change in the future, but now,
 	; I leave this as-is for initial attempts. Sorry about that.
+
+cmd_sdwait:
+	LDA	$D680
+	TAX
+	AND	#$3
+	BNE	cmd_sdwait
+	TXA
+	STA	(mon_out),Z
+	INW	mon_out
+	BRA	command_loop
 
 cmd_call:
 	LDA	(mon_in),Z

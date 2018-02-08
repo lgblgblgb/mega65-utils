@@ -34,6 +34,8 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 
 #define MAX_MTU	1400
 
+#define M65_IO_ADDR(a)    (((a)&0xFFF)|0xFFD3000)
+
 
 static struct {
 	int mtu_size;
@@ -185,6 +187,12 @@ static int msg_add_readmem ( int m65_addr, int size )
 	return expected_answer_pos;
 }
 
+static int msg_add_waitsd ( void )
+{
+	*conn.s_p++ = 5;	// command 5, has no params
+	return (conn.ans_size_expected++);	// but extends the answer with one byte
+}
+
 static void msg_add_writemem ( int m65_addr, int size, unsigned char *buffer )
 {
 	// write does not extend the answer size at all!
@@ -239,12 +247,12 @@ static int msg_commit ( int debug )
 		fprintf(stderr, "Internal mismtach, received size (%d) is not the same what the answer states (%d) to be\n", conn.r_size, conn.m65_size);
 		return -1;
 	}
-	if (conn.r_size != conn.ans_size_expected) {
-		fprintf(stderr, "answer size mismatch, got %d bytes, request expected %d bytes as answer\n", conn.r_size, conn.ans_size_expected);
-		return -1;
-	}
 	if (conn.r_buf[7]) {
 		fprintf(stderr, "M65 reports error, error code = $%02X\n", conn.r_buf[7]);
+		return -1;
+	}
+	if (conn.r_size != conn.ans_size_expected) {
+		fprintf(stderr, "answer size mismatch, got %d bytes, request expected %d bytes as answer\n", conn.r_size, conn.ans_size_expected);
 		return -1;
 	}
 	if (debug)
@@ -254,11 +262,29 @@ static int msg_commit ( int debug )
 
 
 
+static int sdtest ( void )
+{
+	int sd_status_index, sd_data_index;
+	unsigned char buffer[5];
+	buffer[0] = buffer[1] = buffer[2] = buffer[3] = 0;	// sector zero
+	buffer[4] = 2;	// read a block!
+	msg_begin();
+	msg_add_writemem(M65_IO_ADDR(0xD681), 4, buffer);	// write SD sector registers
+	msg_add_writemem(M65_IO_ADDR(0xD680), 1, buffer + 4);	// instruct SD-card controller (command)
+	sd_status_index = msg_add_waitsd();		// instruct monitor to wait SD-card to be ready, and it will give back the status as well
+	// we want to read the SD-card buffer now (even there is an error - status -, then we don't use it, but better than using TWO messages/transmission round ...)
+	sd_data_index = msg_add_readmem(0xFFD6E00,512);
+	if (msg_commit(1))
+		return -1;
+	printf("Received SD-card status register: $%02X\n", conn.r_buf[sd_status_index]);
+	hex_dump(conn.r_buf + sd_data_index, 512, "SD-CARD's boot record, ONLY VALID IF STATUS IS OK");
+	return 1;
+}
 
 
 
 
-static int test ( void )
+static int memtest ( void )
 {
 	time_t t = time(NULL);
 	struct tm *tm_p;
@@ -278,7 +304,8 @@ static int test ( void )
 	msg_begin();	// start to construct a new message for M65
 	msg_add_writemem(2016, i, buf);	// injecting the current time into the C64 screen mem!
 	ans = msg_add_readmem(1024, 40);		// also, we want to see the first line of the C64 screen
-	msg_commit(1);	// commit with debug
+	if (msg_commit(1))	// commit with debug
+		return -1;
 	printf("We've read out the first line of your screen  ");
 	for (i = 0; i < 40; i++) {
 		char c = conn.r_buf[ans++] & 0x7F;
@@ -305,7 +332,9 @@ int main ( int argc, char **argv )
 	}
 	printf("Entering into communication state.\n");
 	if (!strcmp(argv[3], "test"))
-		test();
+		memtest();
+	else if (!strcmp(argv[3], "sdtest"))
+		sdtest();
 	else
 		fprintf(stderr, "Unknown command \"%s\"\n", argv[3]);
 	close(conn.sock);
