@@ -2,7 +2,7 @@
 
 PRG	= m65-client
 CC	= gcc
-CFLAGS	= -O2 -Wall -I.
+CFLAGS	= -O2 -Wall -I. -DUSE_BUSE
 
 all:	$(PRG)
 

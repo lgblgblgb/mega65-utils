@@ -44,13 +44,57 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #define SD_STATUS_SDHC_FLAG 0x10
 #define SD_STATUS_ERROR_MASK (0x40|0x20)
 
+static struct {
+	int mtu_size;
+	int sock;
+	int in_progress_msg;
+	unsigned char s_buf[MAX_MTU], *s_p;
+	unsigned char r_buf[MAX_MTU];
+	int s_size, r_size, ans_size_expected, m65_size;
+	int round_trip_usec;
+	int retransmissions;
+	int retransmit_timeout_usec;
+	int sdhc;
+	int sdsize;
+	int sdstatus;
+	unsigned char *sector;
+	int debug;
+} com;
+
+
 
 #ifdef USE_BUSE
+static int sd_read_sector ( unsigned int sector );
+
+static int nbd_debug;
+
 static int nbd_op_read(void *buf, u_int32_t len, u_int64_t offset, void *userdata)
 {
 	if (*(int *)userdata)
 		fprintf(stderr, "R - %lu, %u\n", offset, len);
-	memcpy(buf, (char *)data + offset, len);
+	// WARNING IT'S MAYBE NOT WORKS (DENYING UNALIGNED ACCESS)
+	if ((len & 511)) {
+		fprintf(stderr, "NBD: ERROR: Length is not multiple of 512\n");
+		return -1;
+	}
+	if ((offset & 511UL)) {
+		fprintf(stderr, "NBD: ERROR: Offset is not 512-byte aligned\n");
+		return -1;
+	}
+	len >>= 9;
+	offset >>= 9;
+	while (len--) {
+		if (sd_read_sector(offset++))
+			return -1;
+		memcpy(buf, com.sector, 512);
+		buf += 512;
+	}
+	return 0;
+/*
+
+	if (*(int *)userdata)
+		fprintf(stderr, "R - %lu, %u\n", offset, len);
+	memcpy(buf, (char *)data + offset, len);*/
 	return 0;
 }
 
@@ -58,8 +102,9 @@ static int nbd_op_write(const void *buf, u_int32_t len, u_int64_t offset, void *
 {
 	if (*(int *)userdata)
 		fprintf(stderr, "W - %lu, %u\n", offset, len);
-	memcpy((char *)data + offset, buf, len);
-	return 0;
+	return -1;
+/*	memcpy((char *)data + offset, buf, len);
+	return 0;*/
 }
 
 static void nbd_op_disc(void *userdata)
@@ -84,11 +129,11 @@ static int nbd_op_trim(u_int64_t from, u_int32_t len, void *userdata)
 
 
 static struct buse_operations aop = {
-	.read = nbd_op_read,
-	.write = nbd_op_write,
-	.disc = nbd_op_disc,
-	.flush = nbd_op_flush,
-	.trim = nbd_op_trim,
+	.read	= nbd_op_read,
+	.write	= nbd_op_write,
+	.disc	= nbd_op_disc,
+	.flush	= nbd_op_flush,
+	.trim	= nbd_op_trim,
 	// either set size, OR set both blksize and size_blocks
 	//.size = 128 * 1024 * 1024,
 	// either set size, OR set both blksize and size_blocks
@@ -99,24 +144,6 @@ static struct buse_operations aop = {
 };
 #endif
 
-
-
-static struct {
-	int mtu_size;
-	int sock;
-	int in_progress_msg;
-	unsigned char s_buf[MAX_MTU], *s_p;
-	unsigned char r_buf[MAX_MTU];
-	int s_size, r_size, ans_size_expected, m65_size;
-	int round_trip_usec;
-	int retransmissions;
-	int retransmit_timeout_usec;
-	int sdhc;
-	int sdsize;
-	int sdstatus;
-	unsigned char *sector;
-	int debug;
-} com;
 
 
 
@@ -718,6 +745,18 @@ static int cli_memtest ( void )
 }
 
 
+static int cli_nbd ( const char *device )
+{
+	nbd_debug = 1;
+	if (sd_get_size()) {	// We need to run the size detection. It will fill "aop" struct as well.
+		fprintf(stderr, "Size detection failed\n");
+		return -1;
+	}
+	return buse_main(device, &aop, (void *)&nbd_debug);
+}
+
+
+
 
 int main ( int argc, char **argv )
 {
@@ -739,7 +778,13 @@ int main ( int argc, char **argv )
 		r = cli_sdsizetest();
 	else if (!strcmp(argv[3], "memdump"))
 		r = cli_memdump();
-	else {
+	else if (!strcmp(argv[3], "nbd")) {
+		if (argc != 5) {
+			fprintf(stderr, "NBD mode needs exactly one command-level parameter, NBD device, like /dev/nbd0\n");
+			r = 1;
+		} else
+			r = cli_nbd(argv[4]);
+	} else {
 		fprintf(stderr, "Unknown command \"%s\"\n", argv[3]);
 		r = 1;
 	}
