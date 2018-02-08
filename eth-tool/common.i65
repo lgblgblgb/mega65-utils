@@ -114,6 +114,7 @@ MONITOR_PORT		= 6510
 .GLOBAL udp_do_tx
 .GLOBAL udp_answer_tx_short
 .GLOBAL udp_answer_tx_long
+.GLOBAL udp_answer_prepare_swap_ips_and_ports
 ; Data
 .GLOBAL ipudp_template_start
 .GLOBAL ipudp_template_ip_size
@@ -128,7 +129,7 @@ MONITOR_PORT		= 6510
 .GLOBAL dhcp_handle_answer
 
 .GLOBAL	tftp_handle_command
-.GLOBAL	tftp_handle_data_or_ack
+.GLOBAL	tftp_handle_in_transfer_packets
 .GLOBAL tftp_server_data_port
 
 .GLOBAL	monitor_handle

@@ -57,6 +57,26 @@ ipudp_template_udp_size:	.DBYT	0	; length of UDP header + data (so, 8 + actual u
 .CODE
 
 
+
+.PROC	udp_answer_prepare_swap_ips_and_ports
+	; Get our IP (source) from the request's target IP field
+	MEMCPY	ipudp_template_source_ip, RX_ETH_PAYLOAD+16, 4	; initialize our (source) IP with the destination one from the request ...
+	; We want to answer to the requestor
+	MEMCPY	ipudp_template_target_ip, RX_ETH_PAYLOAD+12, 4	; set target from request's source
+	; Copy ports ...
+	LDA	RX_ETH_PAYLOAD+20	; source port from request
+	LDX	RX_ETH_PAYLOAD+21
+	STA	ipudp_template_target_port
+	STX	ipudp_template_target_port+1
+	LDA	RX_ETH_PAYLOAD+22	; target port from request
+	LDX	RX_ETH_PAYLOAD+23
+	STA	ipudp_template_source_port
+	STX	ipudp_template_source_port+1
+	; Create the ethernet frame header (in the TX buffer itself!)
+	LDX	#0	; ethertype
+	JMP	make_reply_frame_eth_header
+.ENDPROC
+
 ; A wrapper for udp_do_tx
 ; What it does: uses the RX buffer to fill some header elements for the answer of that request keeping in mind.
 ; That is:
@@ -74,29 +94,11 @@ udp_answer_tx_short:
 udp_answer_tx_long:
 	PHX
 	PHA
-	; Get our IP (source) from the request's target IP field
-	MEMCPY	ipudp_template_source_ip, RX_ETH_PAYLOAD+16, 4	; initialize our (source) IP with the destination one from the request ...
-	; We want to answer to the requestor
-	MEMCPY	ipudp_template_target_ip, RX_ETH_PAYLOAD+12, 4	; set target from request's source
-	; Copy ports ...
-	LDA	RX_ETH_PAYLOAD+20	; source port from request
-	LDX	RX_ETH_PAYLOAD+21
-	STA	ipudp_template_target_port
-	STX	ipudp_template_target_port+1
-	LDA	RX_ETH_PAYLOAD+22	; target port from request
-	LDX	RX_ETH_PAYLOAD+23
-	STA	ipudp_template_source_port
-	STX	ipudp_template_source_port+1
-	; Create the ethernet frame header (in the TX buffer itself!)
-	LDX	#0	; ethertype
-	JSR	make_reply_frame_eth_header
-	; Advance our "nice" handled TFTP requests counter
-	;   >> IT HAS BEEN REMOVED, since this routine is a generic UDP stuff not limited to TFTP only
-	; Do the essential of the work, call IP/UDP header construction and eth level transmit as well!
+	JSR	udp_answer_prepare_swap_ips_and_ports	; separate func, as TFTP is tricky, uses own port to answer as source, so we can do separately as well!
 	PLA
 	PLX
 
-	; **** WARNING: DO NOT PUT ANYTHING HERE CONTROLS FLOWS OVER udp_do_tx below!!!! ****
+	; **** WARNING: DO NOT PUT ANYTHING HERE: CONTROL FLOWS OVER udp_do_tx below!!!! ****
 
 ; Generic IP/UDP packet creator + transmitter!
 ; Notes:

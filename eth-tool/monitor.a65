@@ -21,14 +21,192 @@
 .RODATA
 
 monitor_example_answer:
-	.BYTE "I hear you, dude :) And if you see this, our hand-crafted UDP over IP over ethernet stuff works, even the checksum :-O As a bonus, I changed the border colour for you on M65.", 13, 10
+	.BYTE "I hear you, dude :) Watch your border ...", 13, 10
 monitor_example_answer_size = * - monitor_example_answer
 
 .CODE
 
+
+
+.PROC	mon_mem_copy_param_fetch
+	LDX	#0
+:	LDA	(mon_in),Z
+	INW	mon_in
+	STA	mon_copy,X
+	INX
+	CPX	#6
+	BNE	:-
+ret:
+	RTS
+.ENDPROC
+
+; We just use an available RTS somewhere ;-P
+default_user_callback = mon_mem_copy_param_fetch::ret
+
+
+
 .PROC	monitor_handle
+	; Special _binary_ transfer mode, so a special client can interact with our monitor.
+	; This is done by checking the first byte of the message. If it's zero, we assume
+	; "binary" protocol. Otherwise, we use some kind of text based interface maybe,
+	; for something, but maybe it won't be supported so far for anything ...
+
+	LDA	#.LOBYTE(RX_ETH_PAYLOAD+28)	; create a ZP pointer for the RX buffer to load commands, parameters, etc ...
+	STA	mon_in
+	LDA	#.HIBYTE(RX_ETH_PAYLOAD+28)
+	STA	mon_in+1
+	LDA	#.LOBYTE(TX_ETH_PAYLOAD+28)	; create a ZP pointer for the answer packet data payload
+	STA	mon_out
+	LDA	#.HIBYTE(TX_ETH_PAYLOAD+28)
+	STA	mon_out+1
+	LDZ	#0	; you should not alter reg Z throught this function at least if it's not marked why
+
+	; Reset user callback to the default value (it just returns, nothing more)
+	LDA	#.LOBYTE(default_user_callback)
+	STA	user_callback_addr
+	LDA	#.HIBYTE(default_user_callback)
+	STA	user_callback_addr+1
+
+	; A special binary mode protocol requires a five byte magic, check this, also replicate to TX buffer to "prepare" it for the answer
+
+	LDY	#4	; yes, "magic" checking is in backwards ...
+:	LDA	(mon_in),Z
+	CMP	magic,Y
+	BNE	text_mode_protocol	; check failed, maybe text mode protocol is used
+	STA	(mon_out),Z
+	INW	mon_in			; yes, using INW seems to be overkill, but you'll see later things complicated when we need to get/fetch objects with given size, etc
+	INW	mon_out
+	DEY
+	BPL	:-
+
+	INW	mon_out				; leave two bytes space for the length of answer info
+	INW	mon_out
+	INW	mon_out				; also leave space for the error code
+
+	; Test passed, binary mode protocol, signature even replicated for the wannabe answer in the TX buffer at this point
+	; The protocol itself is simple, and awful. And also dangerous, there is no checks about too much things. So client must be very careful!
+	;
+	; First, both of request and answer begins with a magic sequence, 5 bytes, a zero byte (non-text marker) then the following ASCII text: M65* (yes, the asterisk too!)
+	;
+	; The request consists of series of commands (byte IDs), with possible parameters, command #3 closes the list, it *MUST* be there (otherwise you likely freeze your M65!)
+	; The commands are:
+	;	1 = read memory: params: LENGTH as word, DWORD as 32 bit linear M65 address
+	;	2 = write memory: params: LENGTH as word, DWORD as 32 bit linear M65 address, then LENGTH number of bytes what you want to write to the selected address
+	;	3 = end of request marker
+	;	4 = call user machine code function: params: ADDR as _WORD_, and it's CPU address!! [call will happen after sending the answer back, thus the code can't pass info back in the same call]
+	;
+	; The answer is also starts with the mentioned 5 bytes marker. Then a WORD follows, describing the length of the answer INCLUDING markers, the size itself, and everything!
+	; Then a BYTE follows, which is the error code. If it's non-zero, that's an ERROR!!!
+	; After this, the concat'ed result of *all* read operations of the requests. If there was no read operation, there will be nothing. The unmarked concatation is not a problem,
+	; as the client should now which read ops it used and with which length, so it can resolve.
+	;
+	; **** VERY IMPORTANT NOTES - IF YOU DON'T WANT TO CRASH EVERYTHING ****
+	;
+	; Note: you can read/write even I/O regs, if you specify the "linear address" of the I/O space ...
+	; Note: client can check if M65 "is there" by issuing a command list with only an end-request marker, and expecting to get answer according to that
+	; Note: there is no checking of the parameters, too few specified data or ANYTHING!!!!
+	; Note: it's the CALLER RESPONSIBILITY to use sizes, so everything (even answer) fits into one packet, also dealing with MTU size and don't fragment bit!!!!
+	; Note: client is advised to use MTU discovery algorithm to find out the max size of the transferred request!
+	; Note: in case of multiple read commands, the result is just "concated", write operations do not have any bytes in answer!
+	; Note: issuing an invalid command result in unpredictable result, especially with multiple commands chained. You get error 2 (invalid command) but in case of write ops before happened already!!
+	; Note: byte order is std 6502, low byte first, so interpret "low", "lowest", "highest" etc in this way, even for DWORD sized data!
+	; Note: operations with the given address and with the length MUST NOT cross a 64K boundary!!!
+	; Note: you MUST use only 28 bits in addresses otherwise it may cause problems now, or future versions at least
+	; Note: answer does not have "chain" only the concated binary strings of read ops, if there was any read at all.
+	; Note: if you issue a command with bad marker, probably you get an invalid answer (ie: no marker at the beginning) from the TEXT MODE interface instead! Always check the marker!
+	; Note: you can check the size info in the answer that it really matches the size of received data in the client
+	; Note: user call is quite dangerous .. function should return ASAP with RTS, should not mess the memory up, neither zero page, or stack, etc etc etc ...
+	; Note: also, user callback can be specified only once in the command chain. If more one is specified, only the last one will be called.
+
+command_loop:
+	LDA	(mon_in),Z			; read command
+	INW	mon_in
+	; resolve command
+	DEA
+	BEQ	cmd_read	; command byte was '1'
+	DEA
+	BEQ	cmd_write	; command byte was '2'
+	DEA
+	BEQ	cmd_end		; command byte was '3'
+	DEA
+	BEQ	cmd_call	; command byte was '4'
+	; Illegal command detected!
+	LDA	#2
+	BRA	answer			; answer with error code '2'
+
+	; *NOTE* This is *LARGELY* non-optimal solution what we use here. One thing is DMA, the other is all INW/DEW stuffs.
+	; DMA would be the best, but I was lazy to calculate all the addresses, especially when mon_in is in
+	; CPU addresses, which is MAP'ed and should be converted into linear addressing, then also correct
+	; the pointers if done by DMA instead and so on ... Maybe this will change in the future, but now,
+	; I leave this as-is for initial attempts. Sorry about that.
+
+cmd_call:
+	LDA	(mon_in),Z
+	INW	mon_in
+	STA	user_callback_addr
+	LDA	(mon_in),Z
+	INW	mon_in
+	STA	user_callback_addr+1
+	BRA	command_loop
+
+cmd_read:
+	JSR	mon_mem_copy_param_fetch
+:	NOP				; together with next op: special addressing mode on M65!
+	LDA	(mon_copy+2),Z
+	INW	mon_copy+2
+	STA	(mon_out),Z
+	INW	mon_out
+	DEW	mon_copy
+	BNE	:-
+	BRA	command_loop
+
+cmd_write:
+	JSR	mon_mem_copy_param_fetch
+:	LDA	(mon_in),Z
+	INW	mon_in
+	NOP
+	STA	(mon_copy+2),Z
+	INW	mon_copy+2
+	DEW	mon_copy
+	BNE	:-
+	BRA	command_loop
+
+cmd_end:
+	LDA	#0		; no error code if we hit this point!
+answer:
+	; Well done. Calulate the size of our answer ...
+	STA	TX_ETH_PAYLOAD+28+5+2		; store error code!
+	SEC
+	LDA	mon_out
+	SBC	#.LOBYTE(TX_ETH_PAYLOAD+28)
+	STA	TX_ETH_PAYLOAD+28+5+0
+	TAY			; remember low byte of size for udp_answer_tx_long
+	LDA	mon_out+1
+	SBC	#.HIBYTE(TX_ETH_PAYLOAD+28)
+	STA	TX_ETH_PAYLOAD+28+5+1
+	TAX			; move high byte for size into X, for udp_answer_tx_long below
+	TYA			; ... and low byte to A
+	; Time to answer via the network.
+	JSR	udp_answer_tx_long
+user_callback_addr = * + 1	; beware: self modification point!
+	JMP	$FFFF	; user callback must return with 'RTS'
+
+text_mode_protocol:
 	MEMCPY	TX_ETH_PAYLOAD+28, monitor_example_answer, monitor_example_answer_size
 	INC	53280
 	LDA	#monitor_example_answer_size
 	JMP	udp_answer_tx_short
 .ENDPROC
+
+
+.RODATA
+
+; The binary protocol marker *BUT* backwards :-D We can save a CPY op this way, wow ;-P
+magic:	.BYTE "*56M", 0
+
+
+.ZEROPAGE
+
+mon_in:		.RES	2
+mon_out:	.RES	2
+mon_copy:	.RES	6

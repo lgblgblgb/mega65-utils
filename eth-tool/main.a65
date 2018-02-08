@@ -232,7 +232,7 @@ proto_udp:
 	LDX	#16
 	JSR	is_our_ip
 	LBNE	main_loop
-	JSR	tftp_handle_data_or_ack	; though still, source port must be checked by this func though ... (but it's more a TFTP protocol level stuff)
+	JSR	tftp_handle_in_transfer_packets	; though still, source port must be checked by this func though ... (but it's more a TFTP protocol level stuff)
 	JMP	main_loop
 
 @tftp_initial:

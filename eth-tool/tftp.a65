@@ -18,35 +18,260 @@
 
 .INCLUDE	"common.i65"
 
+
+
 .RODATA
 
+; Whole table must be smaller than 256 bytes
+; Last byte for each msg: TFTP numeric error code WITH BIT7 SET.
+.SCOPE error_table
+start:
+	other_transfer:	.BYTE	"other xfer too?",	$80
+	bad_mode:	.BYTE	"use octet mode!",	$80
+	bad_cmd:	.BYTE	"bad cmd",		$84
+	file_not_found:	.BYTE	"no such file",		$81
+	bad_file_name:	.BYTE	"empty/long name",	$81
+	bad_stid:	.BYTE	"bad sTID",		$85
+	no_space:	.BYTE	"out of space",		$83
+	bad_seq:	.BYTE	"bad blk seq",		$80
+.ENDSCOPE
 
-example_answer:
-	.DBYT	5 ; OP CODE, 5 = error!
-	.DBYT	2 ; Error code = access violation for 2, just to test
-	.BYTE   "hey dude, this won't work"	; error message
-	.BYTE	0	; close byte for msg
-example_answer_size = * - example_answer
+TFTP_ERROR_ONGOING_TRANSFER	= error_table::other_transfer	- error_table::start
+TFTP_ERROR_BAD_MODE		= error_table::bad_mode		- error_table::start
+TFTP_ERROR_BAD_CMD		= error_table::bad_cmd		- error_table::start
+TFTP_ERROR_FILE_NOT_FOUND	= error_table::file_not_found	- error_table::start
+TFTP_ERROR_INVALID_FILENAME	= error_table::bad_file_name	- error_table::start
+TFTP_ERROR_BAD_STID		= error_table::bad_stid		- error_table::start
+TFTP_ERROR_NO_FREE_SPACE	= error_table::no_space		- error_table::start
+TFTP_ERROR_BAD_SEQ		= error_table::bad_seq		- error_table::start
 
 .CODE
 
-.PROC	tftp_test_answer
+; Input: X = offset (!) in error table
+.PROC	tftp_error_answer
+	RTS		; *** deactivate for now **** FIXME TODO 
 
-	MEMCPY	TX_ETH_PAYLOAD+28, example_answer, example_answer_size
-
-	LDA	#example_answer_size
+	LDY	#4
+:	LDA	error_table::start,X
+	BMI	:+
+	STA	TX_ETH_PAYLOAD+28,Y
+	INY
+	INX
+	BRA	:-
+:	AND	#$7F
+	STA	TX_ETH_PAYLOAD+28+3	; error code low byte
+	LDA	#0
+	STA	TX_ETH_PAYLOAD+28,Y	; close the string in the buffer
+	INY
+	STA	TX_ETH_PAYLOAD+28	; opcode high byte is zero
+	STA	TX_ETH_PAYLOAD+28+2	; error code high byte is zero
+	LDA	#5			; opcode = 5 signals error packet
+	STA     TX_ETH_PAYLOAD+28+1	; opcode low byte
+	; We stop ongoing transfer signalling, just in case, so we don't need to do it all the time, if we call this on the data/ack phases
+	LDA	#0
+	STA	tftp_server_data_port+1
+	; And finally, we want to transmit the to-be constructed UDP over IP over ethernet-frame stuff ...
+	TYA	; A=size of answer
 	JMP	udp_answer_tx_short
-
 .ENDPROC
 
-; TODO
-tftp_handle_command = tftp_test_answer
+
+; The initial request, which is targeting port 69 to the server (us)
+.PROC	tftp_handle_command
+	; Check opcode
+	LDA	RX_ETH_PAYLOAD+28	; high byte (as usual, that's again network byte order, opposite of 65xx) of the opcode
+	BNE	unknown_opcode		; it must be always zero
+	LDA	RX_ETH_PAYLOAD+28+1	; low byte of opcode
+	DEA
+	BEQ	opcode_ok		; opcode was 1 (now 0) RRQ - read request
+	CMP	#1
+	BEQ	opcode_ok		; opcode was 2 (now 1) WRQ - write request
+unknown_opcode:
+	LDX	#TFTP_ERROR_BAD_CMD
+	JMP	tftp_error_answer
+opcode_ok:
+	STA	transfer_command	; store opcode for later usage (only low byte), 0 = RRQ, 1 = WRQ (so basically zero/non-zero condition, as no other command initiators are supported)
+	; We need to check if there is on-going transfer in progress, we don't support multiple transfers in parallel for simplicity
+	LDA	tftp_server_data_port+1
+	BEQ	no_transfer_in_progress
+	LDX	#TFTP_ERROR_ONGOING_TRANSFER
+	JMP	tftp_error_answer
+no_transfer_in_progress:
+	; Scan file name (not so much currently, just to found its end and check length)
+	; Skip bytes till we found the zero byte
+	LDX	#0
+:	LDA	RX_ETH_PAYLOAD+28+2,X
+	BEQ	found_end_of_filename
+	INX
+	CPX	#$3F
+	BNE	:-	; if it does not jumps back, then filename is too long
+invalid_filename:
+	LDX	#TFTP_ERROR_INVALID_FILENAME
+	JMP	tftp_error_answer
+found_end_of_filename:
+	TXA	; just to test value of X, to fill zero flag
+	BEQ	invalid_filename	; empty filename??
+	; Test transfer mode specified
+	LDA	RX_ETH_PAYLOAD+28+3,X	; load the first char of transfer mode, +3 and not +2, to avoid an extra INX
+	CMP	#'o'			; we just test the first character of transfer mode, well, it should be enough ...
+	BEQ	transfer_mode_ok
+	CMP	#'O'			; ... but transfer mode is case-insensitive, so again ...
+	BEQ	transfer_mode_ok
+	; Invalid transfer mode!
+	LDX	#TFTP_ERROR_BAD_MODE
+	JMP	tftp_error_answer
+transfer_mode_ok:
+
+	; ****************************************************************
+	; AT THIS POINT WE MUST MAKE SURE IT IS OK TO SERVE THE READ/WRITE
+	; REQUEST. Currently there is not so much test, but in the future,
+	; eg for read, now we must know that it exists, opened for reading
+	; ****************************************************************
+
+	INC	tftp_server_data_port		; create our TID ... just increment low byte (no matter what is was in BSS area initially, does not matter)
+	LDA	#$80				; this is our UDP source port, high byte
+	STA	tftp_server_data_port+1		; remember it (it is also used as an "onging transfer" marker)
+	; Now, we should really know at this point if it's a read or write operation ...
+	LDA	transfer_command
+	BEQ	read_command
+
+	; **** INITIAL RESPONSE TO A WRITE COMMAND ****
+	LDA	#0
+	TAX
+	JMP	send_ack
+
+	; **** INITIAL RESPONSE TO A READ COMMAND ****
+read_command:
+	; Initial response right now is data ...
+	STA	storage_pointer ; TODO
+	STA	storage_pointer+1 ; TODO
+	STA	file_size_counter ; TODO
+	STA	file_size_counter+1 ; TODO
+	;data_block ; TODO
+	;data_block+1 ; TODO
+	; So just leave it to the expert routine on this topic
+	JMP	get_data_on_read
+.ENDPROC
+
+
+
+
+; No input params.
+; Function: construct eth+udp+ip headers using request as a template to be answered.
+; Though that generic routine will be overriden for our source UDP port.
+.PROC	udp_prepare_with_our_source_port
+	JSR	udp_answer_prepare_swap_ips_and_ports
+	LDA	tftp_server_data_port		; our TID
+	STA	ipudp_template_source_port+1	; store as our UDP source port, low byte (network byte order!)
+	LDA	tftp_server_data_port+1		; remember it (it is also used as an "onging transfer" marker)
+	STA	ipudp_template_source_port	; store as our UDP source port, high byte (network byte order!)
+	RTS
+.ENDPROC
+
+
+
+.PROC	get_data_on_read
+	JSR	udp_prepare_with_our_source_port
+	LDA	#.LOBYTE(TX_ETH_PAYLOAD+28+4)
+	STA	packet_pointer
+	LDA	#.HIBYTE(TX_ETH_PAYLOAD+28+4)
+	STA	packet_pointer+1
+	LDX	#0	; packet-data size counter high byte
+	LDY	#0	; always zero
+	LDZ	#0	; packet-data size counter low byte
+loop:
+	DEW	file_size_counter
+	BMI	end_of_file
+	LDA	(storage_pointer),Y
+	STA	(packet_pointer),Y
+	INW	storage_pointer
+	INW	packet_pointer
+	INZ
+	BNE	loop
+	TXA
+	BNE	end_of_msg
+	INX
+	BRA	loop
+end_of_file:
+	; Close transfer!
+	; Note, tha technically we should wait for ACK to do this.
+	; However since it will be the last ACK and it does not trigger anything,
+	; it's kinda safe to just ignore that. HOWEVER FIXME TODO it's a big no-no
+	; if we want to implement re-transmission on timeout feature as well!
+	LDA	#0
+	STA	tftp_server_data_port+1
+end_of_msg:
+	; Fill answer header
+	LDA	#0	; opcode type hi byte
+	STA	TX_ETH_PAYLOAD+28+0
+	LDA	#3	; data block opcode type (low byte)
+	STA	TX_ETH_PAYLOAD+28+1
+	LDA	data_block+1
+	STA	TX_ETH_PAYLOAD+28+2
+	LDA	data_block+0
+	STA	TX_ETH_PAYLOAD+28+3
+	; Calculate size of UDP payload
+	TZA
+	CLC
+	ADC	#4
+	BCC	:+
+	INX
+:	JMP	udp_do_tx
+.ENDPROC
+
+
+
+.PROC	send_ack
+	; Store #block info
+	LDA	data_block
+	STA	TX_ETH_PAYLOAD+28+3
+	LDA	data_block+1
+	STA	TX_ETH_PAYLOAD+28+2
+	INW	data_block
+	; Construct packet/everyrhing.
+	JSR	udp_prepare_with_our_source_port
+	LDX	#0
+	STX	TX_ETH_PAYLOAD+28+0	; ACK opcode high byte
+	LDA	#4
+	STA	TX_ETH_PAYLOAD+28+1	; ACK opcode, low byte
+	; Size of UDP payload (4), it's exactly the opcode already in A, X is high byte of size (0) but it's already in X :)
+	; So we can finnish here ...
+	JMP	udp_do_tx	; setup was already done in udp_prepare_with_our_source_port by calling udp_answer_prepare_swap_ips_and_ports
+.ENDPROC
+
+
 
 ; TODO
-.PROC	tftp_handle_data_or_ack
+.PROC	tftp_handle_in_transfer_packets
+	; TODO: check IP if source is the same at all. Though it's unlikely this cause problem, unless if someone want to do by will :-O
+	; Check source port ("client TID")
 	RTS
 .ENDPROC
 
 .DATA
 
+; Port we choose to give ACK/DATA back to the client. Should be same during a transfer.
+; High byte of this also used by main.a65 and in this source too, to tell, if there
+; is an on-going transfer pending!
 tftp_server_data_port: .BYTE 0,0
+
+test_file_size: .WORD 0
+
+.ZEROPAGE
+
+data_block:	.RES 2
+storage_pointer:	.RES 2
+file_size_counter:	.RES 2
+packet_pointer:		.RES 2
+
+.BSS
+
+; This is used only when a transfer is on-going (signaled by tftp_server_data_port) so we don't need to
+; have initialized memory.
+tftp_client_data_port:	.RES	2
+
+transfer_command:	.RES	1
+
+; This is our test storage, where our 'file' is stored.
+test_file_storage:	.RES	4095
+test_file_storage_end:
