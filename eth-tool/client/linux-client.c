@@ -64,6 +64,8 @@ static struct {
 
 
 #ifdef USE_BUSE
+// prototype, since we want this to be defined later, quite messed up source ;-P
+// TODO: split up, structure the M65-client source in the future ...
 static int sd_read_sector ( unsigned int sector );
 
 static int nbd_debug;
@@ -73,6 +75,7 @@ static int nbd_op_read(void *buf, u_int32_t len, u_int64_t offset, void *userdat
 	if (*(int *)userdata)
 		fprintf(stderr, "R - %lu, %u\n", offset, len);
 	// WARNING IT'S MAYBE NOT WORKS (DENYING UNALIGNED ACCESS)
+	// Also - in my opinion - it shouldn't happen!!! Well, hopefully ...
 	if ((len & 511)) {
 		fprintf(stderr, "NBD: ERROR: Length is not multiple of 512\n");
 		return -1;
@@ -81,20 +84,24 @@ static int nbd_op_read(void *buf, u_int32_t len, u_int64_t offset, void *userdat
 		fprintf(stderr, "NBD: ERROR: Offset is not 512-byte aligned\n");
 		return -1;
 	}
+	// For real, we handle only sector level offset and length.
+	// So mangle our input to reflect starting sector and number of sectors as offset
+	// even if the variable names are mis-leading from this point already
 	len >>= 9;
 	offset >>= 9;
 	while (len--) {
+		if (offset >= com.sdsize) {
+			fprintf(stderr, "NBD: trying to read beyond the end of device.\n");
+			return -1;
+		}
+		// TODO: in case of multiple sectors, we should group by two, in one request/answer, to speed things up maybe two-fold
+		// more than two is not possible wouldn't fit into the MTU of Ethernet already (even two can be problem if this is done
+		// through some 'remote' connection supporting only smaller MTU size for path MTU).
 		if (sd_read_sector(offset++))
 			return -1;
 		memcpy(buf, com.sector, 512);
 		buf += 512;
 	}
-	return 0;
-/*
-
-	if (*(int *)userdata)
-		fprintf(stderr, "R - %lu, %u\n", offset, len);
-	memcpy(buf, (char *)data + offset, len);*/
 	return 0;
 }
 
@@ -102,9 +109,7 @@ static int nbd_op_write(const void *buf, u_int32_t len, u_int64_t offset, void *
 {
 	if (*(int *)userdata)
 		fprintf(stderr, "W - %lu, %u\n", offset, len);
-	return -1;
-/*	memcpy((char *)data + offset, buf, len);
-	return 0;*/
+	return -1;	// writing is not yet supported ...
 }
 
 static void nbd_op_disc(void *userdata)
@@ -138,6 +143,7 @@ static struct buse_operations aop = {
 	//.size = 128 * 1024 * 1024,
 	// either set size, OR set both blksize and size_blocks
 	// LGB: according to my test, everything should be set if blksize is set, or segfault happens!
+	// THESE VALUES ARE OVERRIDEN BY size detection, do not worry about them here :) :)
 	.blksize = 512,
 	.size_blocks = 512 * 1024,
 	.size = 512*512*1024
@@ -435,6 +441,48 @@ rerecv:
 static int sd_reset ( void )
 {
 	unsigned char byteval;
+	int stindex1, stindex2, stindex3;
+	printf("Resetting SD ...\n");
+	msg_begin();
+	// Send SD command 0: reset
+	byteval = 0x00;
+	msg_add_writemem(M65_IO_ADDR(0xD680), 1, &byteval);
+	// Wait for being ready, read status
+	stindex1 = msg_add_waitsd();
+	// Send SD command 1: end-reset
+	byteval = 0x01;
+	msg_add_writemem(M65_IO_ADDR(0xD680), 1, &byteval);
+	// Wait for being ready, read status
+	stindex2 = msg_add_waitsd();
+	// Just to be sure, we issue SDHC setting in the case if RESET would mess it up ...
+	// TODO: is this really needed, or is it safe to ignore?
+	byteval = com.sdhc ? 0x41 : 0x40;	// SDHC mode on/off based on the previous state
+	msg_add_writemem(M65_IO_ADDR(0xD680), 1, &byteval);
+	// Again, we wait and read status ...
+	stindex3 = msg_add_waitsd();
+	// Commit our chained sequence of monitor commands expressed above starting with msg_begin()
+	if (msg_commit()) {
+		fprintf(stderr, "Error in communication while issuing the RESET sequence ...\n");
+		return -1;
+	}
+	printf("  RESET STAT: after cmd-reset = $%02X(err=$%02X), after cmd-end-reset = $%02X(err=$%02X), after cmd-sdhc-set/reset = $%02X(err=$%02X)\n",
+		com.r_buf[stindex1], com.r_buf[stindex1] & SD_STATUS_ERROR_MASK,
+		com.r_buf[stindex2], com.r_buf[stindex2] & SD_STATUS_ERROR_MASK,
+		com.r_buf[stindex3], com.r_buf[stindex3] & SD_STATUS_ERROR_MASK
+	);
+	if ((com.r_buf[stindex3] & SD_STATUS_SDHC_FLAG) != com.sdhc) {
+		fprintf(stderr, "FATAL ERROR: SDHC flag changed during the reset????\n");
+		return -1;
+	}
+	com.sdstatus = com.r_buf[stindex3];
+	// it seems M65 always reports error no matter how hard I try reset ...
+	// but it also seems that next read will be OK ...
+	// so just fake that status does not contain error condition anymore :-O
+	com.sdstatus &= ~SD_STATUS_ERROR_MASK;
+	return 0;
+
+#if 0
+	unsigned char byteval;
 	int status_index;
 	int save_debug;
 	save_debug = com.debug;
@@ -453,6 +501,7 @@ static int sd_reset ( void )
 		com.debug = save_debug;
 		return -1;
 	}
+	// TODO: implement reset in one communication step, with waiting to be ready.
 	// -- send end reset --
 	printf("... sending END-RESET command\n");
 	msg_begin();
@@ -489,6 +538,7 @@ static int sd_reset ( void )
 	printf("Reset process seems to be OK, flag = $%02X\n", com.sdstatus);
 	com.debug = save_debug;
 	return 0;
+#endif
 }
 
 
@@ -590,9 +640,10 @@ static int sd_get_size ( void )
 	if (com.sdhc) {
 		//mask = 0x80000000U;
 		mask = 0x2000000U;
+		printf("Starting from sector probe $%X in SDHC mode\n", mask);
 	} else {
-		mask = 0x200000;
-		printf("Starting from non-SDHC max\n");
+		mask = 0x200000;	// the assumption that non-SDHC card cannot be bigger than 2Gbyte
+		printf("Starting from sector probe $%X in non-SDHC mode\n", mask);
 	}
 	size = 0;
 	while (mask) {
@@ -745,6 +796,7 @@ static int cli_memtest ( void )
 }
 
 
+#ifdef USE_BUSE
 static int cli_nbd ( const char *device )
 {
 	nbd_debug = 1;
@@ -754,6 +806,7 @@ static int cli_nbd ( const char *device )
 	}
 	return buse_main(device, &aop, (void *)&nbd_debug);
 }
+#endif
 
 
 
@@ -779,11 +832,16 @@ int main ( int argc, char **argv )
 	else if (!strcmp(argv[3], "memdump"))
 		r = cli_memdump();
 	else if (!strcmp(argv[3], "nbd")) {
+#ifdef USE_BUSE
 		if (argc != 5) {
 			fprintf(stderr, "NBD mode needs exactly one command-level parameter, NBD device, like /dev/nbd0\n");
 			r = 1;
 		} else
 			r = cli_nbd(argv[4]);
+#else
+		fprintf(stderr, "This client has not been compiled with support for NBD!\n");
+		r = 1;
+#endif
 	} else {
 		fprintf(stderr, "Unknown command \"%s\"\n", argv[3]);
 		r = 1;
