@@ -2,12 +2,12 @@
 
 PRG	= m65-client
 CC	= gcc
-CFLAGS	= -O2 -Wall -I. -DUSE_BUSE
+CFLAGS	= -O2 -Wall -I. -DUSE_BUSE -DUSE_READLINE
 
 all:	$(PRG)
 
 $(PRG): buse.c linux-client.c buse.h Makefile
-	gcc -o $(PRG) $(CFLAGS) buse.c linux-client.c
+	gcc -o $(PRG) $(CFLAGS) buse.c linux-client.c -lreadline
 
 clean:
 	rm -f $(PRG) *.o
