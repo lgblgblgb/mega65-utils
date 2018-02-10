@@ -416,8 +416,8 @@ reselect:
 	if (!FD_ISSET(com.sock, &readfds)) {
 		com.retransmissions++;
 		retrans_here++;
-		if (com.debug)
-			printf("Receive timed out, retransmission (#%d) of the request ...\n", retrans_here);
+		//if (com.debug)
+		printf("Receive timed out, retransmission (#%d) of the request ...\n", retrans_here);
 		goto retransmit;
 	}
 	// *** receive ***
@@ -864,13 +864,13 @@ static int cmd_memdump ( int argc, char **argv )
 }
 
 
-static int test_mms_and_connectivity ( void )
+static int test_mss_and_connectivity ( void )
 {
 	com.mtu_size = MAX_MTU_INITIAL;	// start with not realistic one (on ethernet at least - and M65 "must be" on ethernet ...)
 	com.debug = 0;
 	for (;;) {
 		// fool msg_commit now, we want to send, but totally invalid message ...
-		printf("Trying to connect server with MMS (MTU - protocol_overhead) size %d ...\n", com.mtu_size);
+		printf("Trying to connect server with MSS (MTU - protocol_overhead) size %d ...\n", com.mtu_size);
 		msg_begin();
 		com.s_p[0] = 0;	// insert an invalid command ...
 		com.s_p[1] = 3;	// close the command chain just in case ...
@@ -893,7 +893,7 @@ static int test_mms_and_connectivity ( void )
 		}
 		sleep(1);*/
 	}
-	printf("MMS size discovered: %d\n", com.mtu_size);
+	printf("MSS size discovered: %d\n", com.mtu_size);
 	return 0;
 }
 
@@ -958,6 +958,7 @@ static int cmd_nbd ( int argc, char **argv )
 static int get_param_as_num ( const char *s )
 {
 	long int ret;
+	int base = 0;
 	char *endptr;
 	if (!s || !*s) {
 		fprintf(stderr, "Numeric parameter is empty or NULL\n");
@@ -967,7 +968,9 @@ static int get_param_as_num ( const char *s )
 		fprintf(stderr, "Octal notion is not supported to avoid confusion (number starts with '0' other than zero itself)\n");
 		return -1;
 	}
-	ret = strtol(s, &endptr, 0);
+	if (s[0] == '$')
+		base = 16, s++;
+	ret = strtol(s, &endptr, base);
 	if (*endptr != '\0') {
 		fprintf(stderr, "Invalid numeric parameter was specified (maybe not numeric/integer, etc)\n");
 		return -1;
@@ -982,10 +985,8 @@ static int get_param_as_num ( const char *s )
 
 static int cmd_memrd ( int argc, char **argv )
 {
-	int addr, mem_index;
-	if (!argc)
-		return get_param_as_num(NULL);	// lazy way to do this ;-P
-	addr = get_param_as_num(argv[0]);
+	int mem_index;
+	int addr = get_param_as_num(argc ? argv[0] : NULL);
 	if (addr < 0)
 		return -1;
 	printf("ADDR = %d ~ $%X\n", addr, addr);
@@ -999,10 +1000,7 @@ static int cmd_memrd ( int argc, char **argv )
 
 static int cmd_sdrdsect ( int argc, char **argv )
 {
-	int addr;
-	if (!argc)
-		return get_param_as_num(NULL);	// lazy way to do this ;-P
-	addr = get_param_as_num(argv[0]);
+	int addr = get_param_as_num(argc ? argv[0] : NULL);
 	if (addr < 0)
 		return -1;
 	printf("SECTOR = %d ~ $%X\n", addr, addr);
@@ -1011,6 +1009,48 @@ static int cmd_sdrdsect ( int argc, char **argv )
 	hex_dump(com.sector, 512, "Sector dump", 0);
 	return 0;
 }
+
+static int cmd_sdpart ( int argc, char **argv )
+{
+	int i;
+	char title[] = "PARTITION ENTRY #?";
+	if (sd_read_sector(0)) {
+		fprintf(stderr, "Cannot read MBR!\n");
+		return -1;
+	}
+	if (com.sector[0x1FE] != 0x55 || com.sector[0x1FF] != 0xAA)
+		fprintf(stderr, "Warning: MBR signature is not detected!\n");
+	//hex_dump(com.sector, 512, "MBR", 0);
+	for (i = 0; i < 4; i++) {
+		unsigned int o = 0x1BE + (i << 4);
+		unsigned char *p = com.sector + o;
+		int start, size;
+		title[sizeof(title) - 2] = i + '0' + 1;
+		hex_dump(p, 16, title, o);
+		start = p[8] | (p[9] << 8) | (p[10] << 16) | (p[11] << 24);
+		size  = p[12] | (p[13] << 8) | (p[14] << 16) | (p[15] << 24);
+		printf("  status=$%02X type=$%02X CHS:start[ignored]=%d,%d,%d CHS:end[ignored]=%d,%d,%d LBA:start=$%X LBA:size=$%X (~ %d Mbytes)\n",
+			p[0], p[4],
+			p[3] + ((p[2] & 0xC0) << 2),	// cylinder start
+			p[1],				// head start
+			p[2] & 0x3F,			// sector start,
+			p[7] + ((p[6] & 0xC0) << 2),	// cylinder start
+			p[5],				// head start
+			p[6] & 0x3F,			// sector start,
+			start,
+			size,
+			size >> 11
+		);
+		if (start == 0 || size == 0 )
+			printf("  this partition seems to be unused (no valid LBA data - we only handle LBA!)\n");
+		else if (p[4] == 0x0B || p[4] == 0x0C)
+			printf("  seems to be a FAT32 partition: $%02X\n", p[4]);
+		else
+			printf("  unknown (for us) partition type $%02X\n", p[4]);
+	}
+	return 0;
+}
+
 
 
 static int cmd_help ( int argc, char **argv );
@@ -1021,6 +1061,7 @@ static const struct {
 	const char *help;
 } cmd_tab[] = {
 	{ "test", cmd_test, "Simple test to put clock on M65 screen, and read first line of M65 screen back" },
+	{ "sdpart", cmd_sdpart, "Parition table on the M65's SD-card" },
 	{ "sdtest", cmd_sdtest, "SD-Card read-test for two sectors, and performance test on multiple reading" },
 	{ "sdsize", cmd_sdsizetest, "Detect SD-card size from client (can give cached result!)" },
 	{ "sdrd", cmd_sdrdsect, "Reads a given sector from SD-card (paramter is the sector number)" },
@@ -1089,23 +1130,29 @@ static int m65_shell ( const char *hostname, int port )
 		int i;
 		if (!line)	// EOF (eg CTRL-D pressed) will gives us NULL back! This is also a sign for exit.
 			break;
-		if (*line)
-			add_history(line);
+		if (*line) {
+			char *p = line;
+			while (*p == ' ')
+				p++;
+			if (!*p)
+				continue;
+			else
+				add_history(line);
+		}
 		for (i = 0;;) {
 			args[i] = strtok(i ? NULL : line, "\t ");
 			if (!args[i])
 				break;
 			i++;
 		}
-		if (i && !strcmp(args[0], "exit"))
-			i = -1;
-		if (i > 0) {
-			//add_history(line);
+		if (i) {
+			if (!strcmp(args[0], "exit")) {
+				free(line);
+				break;
+			}
 			m65_cmd_executor(i, args);
 		}
-		free(line);	// readline malloc()'s the answer for us, we must free() it
-		if (i < 0)
-			break;
+		free(line);
 	}
 	printf("\nBy(T)e!\n");
 	return 0;
@@ -1127,7 +1174,7 @@ int main ( int argc, char **argv )
 		fprintf(stderr, "Too long hostname was specified.\n");
 		return 1;
 	}
-	port = atoi(argv[2]);
+	port = get_param_as_num(argv[2]);
 	if (port <= 0 || port > 0xFFFF) {
 		fprintf(stderr, "Bad port value given\n");
 		return 1;
@@ -1136,12 +1183,9 @@ int main ( int argc, char **argv )
 		fprintf(stderr, "Network setup failed\n");
 		return 1;
 	}
-	if (test_mms_and_connectivity())
+	if (test_mss_and_connectivity())
 		return 1;
-	if (argc == 3)
-		port = m65_shell(argv[1], port);
-	else
-		port = m65_cmd_executor(argc - 3, argv + 3);
+	port = argc == 3 ? m65_shell(argv[1], port) : m65_cmd_executor(argc - 3, argv + 3);
 	close(com.sock);
 	return port;
 }

@@ -1,123 +1,147 @@
 # Simple client for eth-tool's "monitor port"
 
+This utility allows to intract with your M65 through the network, if M65 is attached
+to an ethernet LAN.
+
 Currently, it's a Linux-specific client. It also contains code from the "BUSE" project,
 see here: https://github.com/acozzette/BUSE
 
-**Current supported command line only in the test phase as examples**:
+## Usage
 
-Little test, injects actual time onto your M65 screen, and also grabbing the first line of M65 screen:
+This tool is a command-line oriented client to be served by your M65 running "eth-tool" as
+the server. It works with non-fragmented UDP over IPv4 datagrams.
 
-    ./m65-client 192.168.0.65 6510 test
-    $ ./m65-client 192.168.0.65 6510 test
-    Sending to server: (192.168.0.65) 192.168.0.65:6510 with initial MTU of 1400 bytes ...
-    Entering into communication state.
-    DUMP[REQUEST TO SEND; 28 bytes]:
-      0000   00 4D 36 35 2A 02 08 00 E0 07 00 00 32 31 3A 33
-      0010   36 3A 32 38 01 28 00 00 04 00 00 03
-    Request-answer round-trip in msecs: 0.344000
-    DUMP[RECEIVED ANSWER; 48 bytes]:
-      0000   00 4D 36 35 2A 30 00 00 12 18 3A 38 33 38 20 14
-      0010   18 3A 37 31 35 20 01 12 10 3A 30 30 39 20 10 09
-      0020   0E 07 3A 30 30 30 20 14 06 14 10 3A 30 30 30 20
-    WOW, answer seems to be OK ;-)
-    We've read out the first line of your screen  RX:838 TX:715 ARP:009 PING:000 TFTP:000 
-    Well, the screen code conversion is not perfect though in this client :-)
-    Also, we've injected the current local time on your PC to your M65 screen.
+By default, currently, eth-tool on M65 listens for every IP address ending in '65', and
+on port 6510. This may change in the future. eth-tool must be running before you try to
+use this client, otherwise it will just try to reach it in an endless loop, what you need
+to interrupt with CTRL-C.
 
-Reads the first two sectors of your SD card, then doing a performance test with reading 1000 sectors:
+You have basically there three ways to use this client:
 
-    ./m65-client 192.168.0.65 6510 sdtest
-    ....
+* `m65-client -h`
+* `m65-client 192.168.0.65 6510`
+* `m65-client 192.168.0.65 6510 some_command [possible command parameters]`
 
-SD-card size detection, dictated by the client:
+The first version simply prints some help (and list of available commands). It does not
+try to establish connection with M65.
 
-    ./m65-client 192.168.0.65 6510 sdsizetest
+The second and third form already requires eth-tool running on M65 which is has to be
+attached to your LAN. In the examples, `192.168.0.65` can be replaced with your own
+needs, also the port `6510`, if you re-configured eth-tool and recompiled it to use
+a different one.
 
-    This is **the problem** ... It creates errors (by will) which then "stuck" and no SD works any more :(
+Third version directly accepts a command to be executed, then client exits. The second
+version however present you a shell, where you can use multiple commands one by one before
+you exit (by pressing CTRL-C at empty prompt, or using the `exit` command). The command
+names are the same though for the command line and interactive versions. You can use
+command `help` in the shell to get a summary of available commands. The shell uses
+GNU libreadline, so it supports history the usual way (cursor up), however currently
+saving history, or custom command completion is not (yet?) supported.
 
-Dumping 256K memory (fast+chip RAM) into mem.dmp:
+So, an example to issue `sdsize` command:
 
-    $ ./m65-client 192.168.0.65 6510 memdump
-    Sending to server: (192.168.0.65) 192.168.0.65:6510 with initial MTU of 1400 bytes ...
-    Entering into communication state.
-    WOW! Dump is completed, 0 retransmission was needed, avg transfer rate is 790.360107 Kbytes/sec.
-    $ ls -l mem.dmp 
-    -rw-r--r-- 1 lgb lgb 262144 Feb  8 21:34 mem.dmp
+    m65-client 192.168.0.65 6510 sdsize
+    [...]
+    (and you get your OS prompt back)
 
-**IGNORE** the rest of this README for now!
+This is the command line syntax.
 
-## Command line syntax:
+    m65-client 192.168.0.65 6510
+    [...]
+    *** Welcome to the M65-client shell! Press CTRL-D to exit with empty command line ***
+    m65@192.168.0.65:6510> sdsize
+    [...]
+    m65@192.168.0.65:6510> exit
 
-    m65-client IP-address PORT COMMAND (possible command parameters)
+This is the interactive shell, you remains there till you exit.
 
-Example:
+## Available commands
 
-    m65-client 192.168.0.65 6510 nbd /dev/nbd0
+Note: the exact list of available commands, their exact meanings, etc is not fixed yet,
+as it's an early stage of the project.
 
-By default, eth-tool on M65 listens for any IP ends in octet '65'. This will change
-in the future, with proper DHCP support. Port number should be 6510, unless you've
-changed in eth-tool's source.
+### Command memdump
 
-Available commands and its parameters with usage comments:
+It reads the first 256K memory of M65 and dumps that into a file named `mem.dmp`.
 
-### test
+### Command memrd
 
-Only tests the connection with eth-tool. No parameters after the command name `test`.
+This commands requires a parameter (can be hex with 0x or $ prefix) and will cause
+to display the memory content of your M65 at the given value. The address itself
+is an M65-specific "linear" 28 bit address.
 
-### sprite
+### Command nbd
 
-**TODO**
+This is a quite heavy one. It implements an NBD bloack device, with the "storage"
+being your M65 via the network. After that, you can use this on your Linux box,
+as any other block device, like `/dev/sda` or whatever, just now you need to use
+`/dev/nbd0` for example. The exact list of things you must aware of:
 
-A simple test, to "upload" a sprite and programming VIC to show it. No other parameters.
+* You need NBD kernel module, ie, you need to say `modprobe nbd` as root on your
+  Linux first.
+* You must run the m65-client as user `root`, since it requires root privileges
+  for this operation (but not for the other commands, usually it's safer not to
+  run any program as `root`, unless you really need it! general rule ...)
+* You must use a device name, usually it's `/dev/nbd0` but if you have anything
+  use NBD already, it may need to use another numbered device.
+* You must give the device name as a parameter after the `nbd` command.
+* You can use both the shell or the command line mode to give this command though.
+* There is no way to stop this command, you need to use CTRL-C. **however it is
+  very dangerous too, especally, if your nbd device is in use, like mounted, etc
+  meanwhile. Be sure you did `umount` for those (if any), and issued a `sync`
+  command, also wait for I/O traffic settles down after these (it can take
+  a considerable time!!) and stop client only after that! Also, do not turn off
+  or reset your M65, loosing the connection with M65 also can cause serious
+  problems**
+* After successfully start of nbd mode, you can use it as a standard block
+  device. Eg, you can even use `fdisk` to inspect the MBR, or you can `mount`
+  a partition also shown by `fdisk`. However beware about the warning above!
+  Also, be sure, that you use read-only mount mode. Trying to write cause
+  async delayed write failures, kernel thinks the write OK, and delays writes
+  to gather I/O groupped and then it's already too late to realize it won't
+  work. Probably that's a bug in my code though :)
 
-### sdcard
+**CURRENTLY write access is NOT supported via NBD!**
 
-**TODO**
+### Command sdpart
 
-A test, which performs testing on access of M65's sdcard. It tries to determine the size
-of the card, and even the first few sectors are read and dumped on the screen. No other
-parameters.
+Displays the partition table of your SD-card on your M65.
 
-### nbd /dev/nbdX (usually X=0)
+### Command sdrd
 
-**TODO**
+Reads a given sector (this commands needs a parameter: the sector to be read)
+and displays it as a form of hex dump.
 
-Sets up a network block device consumer, so your Linux OS can see the content of
-the SD-card inserted into your M65 as a block device, which can be handled then
-the usual way (`fdisk`, `mount`-ing a partition on it, etc).
+### Command sdsize
 
-**Important note: mounting the given nbd device (or a partition on it, to be more precise) is
-dangerous, especially if you break the connection in an unexpected way (ie, stopping client, M65's eth-tool,
-or anything like this).  Kernel may left the
-device in un-synced state. Always unmount it ASAP, especially before you stop
-either m65-client on your PC, or eth-tool on your M65! Failing to do so, even can create some
-ugly kernel messages**
+This commands does an SD card size detection process, by interpolating size
+with trying sizes on various decremanted bit mask to be able to figure out
+the exact size with the possible less steps. During this command error messages
+are normal (sector cannot be read), since this is how it works, actually.
 
-It's advised to write a shell script which mounts, do the work (eg copy file) then unmounts.
+Note: `nbd` actually runs this command first, since it must know the actual size
+of the SD-card!
 
-User should have the nbd Linux kernel module installed first:
+### Command sdtest
 
-    modprobe nbd
+Reads and dumps of sector 0 (as a basic test, if it works), and also does a
+performance test with reading 1000 sectors, so you must wait a bit. You will
+get some kind of stats on this process at the end.
 
-Then:
+    Running performance test [with reading 1000 sectors].
+    Please stand by ...
+    DONE.
+    Sectors read: 1000
+    Total number of retransmissions: 0
+    Seconds: 1.295864
+    Sectors/second: 771.685918
+    Kilobytes/second: 385.842959
 
-     m65-client 192.168.0.65 6510 nbd /dev/nbd0
+### Command test
 
-Note, that both of the `modprobe` command, and m65-client needs `root` privileges. For
-m65-client, you can avoid that, by setting the user and permission of /dev/nbd0 (though
-I haven't tested that) first. If you have other network block devices used, you may want to
-specify another instance than 0 in the device name.
-
-Leave m65-client running! You should see `/dev/nbd0` (or other instance than 0 what you specified) in
-`/proc/partitions` (`cat` it!). If fact, you also should see the partitions on the SD-card itself, in the form
-of (for example): `nbd0p1`.
-
-Maybe a safer way than mount (though I didn't tested that!!). mtools is a tool designed for
-simple mount-less "DOS like operations", ie for DOS' `dir` you have `mdir`, for `copy` you
-have `mcopy`. And so on. Though, for this, you need to configure mtools (or given by command
-line switch all the time ... for both of device and offset of the partition), also it's possible,
-that mtools don't handle FAT32 well enough (or at all) for example.
-
-You can also use regular tools, like `fdisk` to check the partition table of your M65 SD-card (or
-probably even modify it, if you're brave enough).
-
+This is the most basic test, without too much sane goal. It pushes the current
+local time of your Linux box onto the M65's screen, and grabs the first line
+of your M65 screen displayed on your Linux box. It's only good for testing the
+basic functionality of the M65 vs client communication. It also dumps the
+UDP packets used for communication, which can help to find problems if this
+command is really needed.
