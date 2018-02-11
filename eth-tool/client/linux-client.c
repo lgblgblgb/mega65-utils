@@ -51,6 +51,11 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #define SD_STATUS_SDHC_FLAG 0x10
 #define SD_STATUS_ERROR_MASK (0x40|0x20)
 
+#define M65_SD_BUFFER_FLATADDR		0xFFD6E00
+#define M65_SD_SECTOR_REGS		M65_IO_ADDR(0xD681)
+#define M65_SD_CMD_REG			M65_IO_ADDR(0xD680)
+
+
 static struct {
 	int mtu_size, header_overhead, mtu_changed;
 	int sock;
@@ -371,6 +376,13 @@ static void msg_add_writemem ( int m65_addr, int size, unsigned char *buffer )
 	com.s_p += size;
 }
 
+
+static void msg_add_writebyte ( int m65_addr, unsigned char byte )
+{
+	msg_add_writemem(m65_addr, 1, &byte);
+}
+
+
 static int msg_commit ( void )
 {
 	struct timeval tv1, tv2;
@@ -605,8 +617,8 @@ static int sd_get_sdhc ( void )
 // see sd_read_sector for some additional comments
 static int sd_write_sector ( unsigned int sector, unsigned char *data )
 {
-	unsigned char buffer[6];
-	int sd_status_index1, sd_status_index2, sd_data_index;
+	unsigned char buffer[4];
+	int sd_status_index0, sd_status_index1, sd_status_index2, sd_data_index;
 	com.sector = NULL;
 	if (sd_get_sdhc())
 		return -1;
@@ -626,31 +638,40 @@ static int sd_write_sector ( unsigned int sector, unsigned char *data )
 	buffer[2] = (sector >> 16) & 0xFF;
 	buffer[3] = (sector >> 24) & 0xFF;
 	msg_begin();
+	// ODD ENOUGH, why do we need this????
+	msg_add_writebyte(M65_IO_ADDR(0xD680), 1);	// END RESET command to be sent
+
 	// --- write I/O area with sector number
 	msg_add_writemem(M65_IO_ADDR(0xD681), 4, buffer);
 	// --- fill sector buffer with out data
-	msg_add_writemem(0xFFD6E00, 512, data);
+	hex_dump(data, 512, "To be written ...", 0);
+	msg_add_writemem(M65_SD_BUFFER_FLATADDR, 512, data);
 	// --- give our write command
-	buffer[4] = 3;
-	msg_add_writemem(M65_IO_ADDR(0xD680), 1, buffer + 4);
+	sd_status_index0 = msg_add_waitsd();
+	msg_add_writebyte(M65_IO_ADDR(0xD680), 3);	// write command
 	// --- wait for ready + read status
 	sd_status_index1 = msg_add_waitsd();
 	// --- corrupt SD sector buffer by will, so we can detect what happens on read-back ...
-	buffer[4] = data[0] ^ 0xFF;
-	msg_add_writemem(0xFFD6E00, 1, buffer + 4);
+	msg_add_writebyte(M65_SD_BUFFER_FLATADDR, data[0] ^ 0xFF);
 	// --- read block back
-	buffer[4] = 2;	// read command
-	msg_add_writemem(M65_IO_ADDR(0xD680), 1, buffer + 4);	// also, we want to read result back ...
+	//msg_add_writemem(M65_IO_ADDR(0xD681), 4, buffer);	// just in case ...
+	msg_add_writebyte(M65_IO_ADDR(0xD680), 2);	// read command
 	// --- wait for ready + read status
 	sd_status_index2 = msg_add_waitsd();
 	// --- read SD sector buffer, so we can test the result
-	sd_data_index = msg_add_readmem(0xFFD6E00, 512);
+	sd_data_index = msg_add_readmem(M65_SD_BUFFER_FLATADDR, 512);
 	if (msg_commit())
 		return -1;
-	
-
-	memcmp(data, com.r_buf + sd_data_index, 512);
+	// Phew. OK. Cool down, and let's examine the results more closely.
+	hex_dump(com.r_buf + sd_data_index, 512, "Re-read stuff", 0);
+	printf("SD status before write=$%02X, after write=$%02X, after read=$%02X, data_comparsion = %s\n",
+		com.r_buf[sd_status_index0],
+		com.r_buf[sd_status_index1],
+		com.r_buf[sd_status_index2],
+		!memcmp(data, com.r_buf + sd_data_index, 512) ? "matches" : "**MISMATCH**"
+	);
 	//com.sdstatus = com.r_buf[sd_status_index];
+	return 0;
 }
 
 
@@ -688,7 +709,7 @@ static int sd_read_sector ( unsigned int sector )
 	msg_add_writemem(M65_IO_ADDR(0xD680), 1, buffer + 4);
 	sd_status_index = msg_add_waitsd();
 	// we want to read the SD-card buffer in the answer (even there is an error - see status -, then we don't use it, but better than using TWO messages/transmission rounds ...)
-	sd_data_index = msg_add_readmem(0xFFD6E00, 512);
+	sd_data_index = msg_add_readmem(M65_SD_BUFFER_FLATADDR, 512);
 	// ---- COMMIT MESSAGE, WAITING FOR ANSWER ----
 	if (msg_commit())
 		return -1;
@@ -905,7 +926,7 @@ static int cmd_test ( int argc, char **argv )
 	struct tm *tm_p;
 	int i, ans;
 	unsigned char buf[41];
-	com.debug = 1;	// turn debug ON
+	int debug_saved = com.debug;
 	tm_p = localtime(&t);
 	if (!tm_p) {
 		perror("localtime()");
@@ -916,12 +937,16 @@ static int cmd_test ( int argc, char **argv )
 		perror("strftime()");
 		return -1;
 	}
+	com.debug = 1;  // turn debug ON
 	// We have some time ;-P
 	msg_begin();	// start to construct a new message for M65
 	msg_add_writemem(2016, i, buf);	// injecting the current time into the C64 screen mem!
 	ans = msg_add_readmem(1024, 40);		// also, we want to see the first line of the C64 screen
-	if (msg_commit())	// commit message + wait answer
+	if (msg_commit()) {	// commit message + wait answer
+		com.debug = debug_saved;
 		return -1;
+	}
+	com.debug = debug_saved;
 	printf("We've read out the first line of your screen  ");
 	for (i = 0; i < 40; i++) {
 		char c = com.r_buf[ans++] & 0x7F;
@@ -989,12 +1014,12 @@ static int cmd_memrd ( int argc, char **argv )
 	int addr = get_param_as_num(argc ? argv[0] : NULL);
 	if (addr < 0)
 		return -1;
-	printf("ADDR = %d ~ $%X\n", addr, addr);
+	printf("Memory dump from M65 flat address %d = $%X\n", addr, addr);
 	msg_begin();
 	mem_index = msg_add_readmem(addr, 512);
 	if (msg_commit())
 		return -1;
-	hex_dump(com.r_buf + mem_index, 512, "memory dump", addr);
+	hex_dump(com.r_buf + mem_index, 512, "Memory dump", addr);
 	return 0;
 }
 
@@ -1003,17 +1028,20 @@ static int cmd_sdrdsect ( int argc, char **argv )
 	int addr = get_param_as_num(argc ? argv[0] : NULL);
 	if (addr < 0)
 		return -1;
-	printf("SECTOR = %d ~ $%X\n", addr, addr);
+	printf("SD-card sector dump on sector %d = $%X\n", addr, addr);
 	if (sd_read_sector(addr))
 		return -1;
-	hex_dump(com.sector, 512, "Sector dump", 0);
+	hex_dump(com.sector, 512, "SD-card sector dump", 0);
 	return 0;
 }
+
+
+static char partition_entry_title[] = "PARTITION ENTRY #?";
+
 
 static int cmd_sdpart ( int argc, char **argv )
 {
 	int i;
-	char title[] = "PARTITION ENTRY #?";
 	if (sd_read_sector(0)) {
 		fprintf(stderr, "Cannot read MBR!\n");
 		return -1;
@@ -1025,8 +1053,8 @@ static int cmd_sdpart ( int argc, char **argv )
 		unsigned int o = 0x1BE + (i << 4);
 		unsigned char *p = com.sector + o;
 		int start, size;
-		title[sizeof(title) - 2] = i + '0' + 1;
-		hex_dump(p, 16, title, o);
+		partition_entry_title[sizeof(partition_entry_title) - 2] = i + '0' + 1;
+		hex_dump(p, 16, partition_entry_title, o);
 		start = p[8] | (p[9] << 8) | (p[10] << 16) | (p[11] << 24);
 		size  = p[12] | (p[13] << 8) | (p[14] << 16) | (p[15] << 24);
 		printf("  status=$%02X type=$%02X CHS:start[ignored]=%d,%d,%d CHS:end[ignored]=%d,%d,%d LBA:start=$%X LBA:size=$%X (~ %d Mbytes)\n",
@@ -1042,7 +1070,7 @@ static int cmd_sdpart ( int argc, char **argv )
 			size >> 11
 		);
 		if (start == 0 || size == 0 )
-			printf("  this partition seems to be unused (no valid LBA data - we only handle LBA!)\n");
+			printf("  this partition seems to be unused (no valid LBA data or unrealistic ones - we only handle LBA!)\n");
 		else if (p[4] == 0x0B || p[4] == 0x0C)
 			printf("  seems to be a FAT32 partition: $%02X\n", p[4]);
 		else
@@ -1050,6 +1078,20 @@ static int cmd_sdpart ( int argc, char **argv )
 	}
 	return 0;
 }
+
+
+static int cmd_sdwrtest ( int argc, char **argv )
+{
+	unsigned char buffer[512];
+	int i;
+	for (i = 0; i < sizeof(buffer); i++)
+		buffer[i] = i ^ 0xFF;
+	i = sd_write_sector(1, buffer);
+	if (i)
+		printf("ERROR: sd_write_sector funec returned with %d\n", i);
+	return 0;
+}
+
 
 
 
@@ -1065,6 +1107,7 @@ static const struct {
 	{ "sdtest", cmd_sdtest, "SD-Card read-test for two sectors, and performance test on multiple reading" },
 	{ "sdsize", cmd_sdsizetest, "Detect SD-card size from client (can give cached result!)" },
 	{ "sdrd", cmd_sdrdsect, "Reads a given sector from SD-card (paramter is the sector number)" },
+	{ "sdwrtest", cmd_sdwrtest, "DANGEROUS write test on sector #1 !!!!" },
 	{ "memdump", cmd_memdump, "Dumps M65's memory (first 256K) into file mem.dmp" },
 	{ "memrd", cmd_memrd, "Reads the (linear) M65 memory map from given address (parameter)" },
 	{ "nbd", cmd_nbd, "Creates an NBD device which can be mounted on Linux (requires device name)" },
@@ -1082,11 +1125,8 @@ static int cmd_help ( int argc, char **argv )
 	else
 		printf("Help request on command '%s':\n", argv[0]);
 	for (i = 0; cmd_tab[i].cmd; i++) {
-		if (cmd_tab[i].func == cmd_help)
+		if (cmd_tab[i].func == cmd_help || (argc && strcmp(cmd_tab[i].cmd, argv[0])))
 			continue;
-		if (argc && strcmp(cmd_tab[i].cmd, argv[0])) {
-			continue;
-		}
 		printf("  %-16s%s\n", cmd_tab[i].cmd, cmd_tab[i].help ? cmd_tab[i].help : "");
 		hit = 1;
 	}
@@ -1099,16 +1139,18 @@ static int cmd_help ( int argc, char **argv )
 static int m65_cmd_executor ( int argc, char **argv )
 {
 	int i;
-	if (argc == 0) {
-		fprintf(stderr, "m65_cmd_executor() with zero params!\n");
+	if (argc <= 0) {
+		fprintf(stderr, "m65_cmd_executor() with zero or negative params (%d)!\n", argc);
 		return 1;
 	}
 #if 0
+	printf("NEW COMMAND!\n");
 	i = 0;
 	while (i < argc) {
 		printf("Param#%d=\"%s\"\n", i, argv[i]);
 		i++;
 	}
+	return 0;
 #endif
 	for (i = 0; cmd_tab[i].cmd; i++)
 		if (!strcmp(cmd_tab[i].cmd, argv[0]))
@@ -1117,6 +1159,37 @@ static int m65_cmd_executor ( int argc, char **argv )
 	return 1;
 }
 
+
+static int m65_cmd_executor_multiple ( int argc, char** argv )
+{
+	int ret = 0;
+	for (;;) {
+		int i;
+		for (i = 0; i < argc; i++)
+			if (argv[i][0] == ',' && argv[i][1] == '\0')
+				break;
+		if (i < argc) {
+			if (i) {
+				printf("---[ EXECUTING COMMAND '%s' ]---\n", argv[0]);
+				ret = m65_cmd_executor(i, argv);
+				if (ret) {
+					fprintf(stderr, "---[ BREAKING COMMAND CHAIN: non-zero return code with command '%s' ]---\n", argv[0]);
+					return ret;
+				}
+			}
+			argc -= i + 1;
+			argv += i + 1;
+		} else {
+			if (argc) {
+				printf("---[ EXECUTING COMMAND '%s' ]---\n", argv[0]);
+				ret = m65_cmd_executor(argc, argv);
+				if (ret)
+					fprintf(stderr, "---[ LAST COMMAND: non-zero return code with command '%s' ]---\n", argv[0]);
+			}
+			return ret;
+		}
+	}
+}
 
 
 static int m65_shell ( const char *hostname, int port )
@@ -1176,7 +1249,7 @@ int main ( int argc, char **argv )
 	}
 	port = get_param_as_num(argv[2]);
 	if (port <= 0 || port > 0xFFFF) {
-		fprintf(stderr, "Bad port value given\n");
+		fprintf(stderr, "Bad port value given: %s\n", argv[2]);
 		return 1;
 	}
 	if (m65_con_init(argv[1], port)) {
@@ -1185,7 +1258,7 @@ int main ( int argc, char **argv )
 	}
 	if (test_mss_and_connectivity())
 		return 1;
-	port = argc == 3 ? m65_shell(argv[1], port) : m65_cmd_executor(argc - 3, argv + 3);
+	port = argc == 3 ? m65_shell(argv[1], port) : m65_cmd_executor_multiple(argc - 3, argv + 3);
 	close(com.sock);
 	return port;
 }

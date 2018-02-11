@@ -5,6 +5,9 @@ found here: https://github.com/lgblgblgb/mega65-utils/tree/master/eth-tool/bin
 
 Source: https://github.com/lgblgblgb/mega65-utils/tree/master/eth-tool
 
+Note, you can interact with this software on your M65 from your PC, through the network! You need a special client for that, what you can find
+in the client/ directory, ie: https://github.com/lgblgblgb/mega65-utils/tree/master/eth-tool/client
+
 ## Currently, it can:
 
 * Receiving and replying to ARP requests

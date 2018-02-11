@@ -3,8 +3,15 @@
 This utility allows to intract with your M65 through the network, if M65 is attached
 to an ethernet LAN.
 
-Currently, it's a Linux-specific client. It also contains code from the "BUSE" project,
-see here: https://github.com/acozzette/BUSE
+Currently, it's a Linux-specific client.
+
+Besides of my work, the client also contains code from the "BUSE" project to
+realize the NBD feature, please see here: https://github.com/acozzette/BUSE
+
+Also, direct FAT support is planned to be added, so you can use commands at least
+like `dir`, `copy` (the later for copying files between your "PC" and M65's SD-card
+via the network, without using the much complicated and too Linux specific NBD
+feature).
 
 ## Usage
 
@@ -16,11 +23,12 @@ on port 6510. This may change in the future. eth-tool must be running before you
 use this client, otherwise it will just try to reach it in an endless loop, what you need
 to interrupt with CTRL-C.
 
-You have basically there three ways to use this client:
+You have basically there four ways to use this client:
 
 * `m65-client -h`
 * `m65-client 192.168.0.65 6510`
-* `m65-client 192.168.0.65 6510 some_command [possible command parameters]`
+* `m65-client 192.168.0.65 6510 some_command [possible command parameters]` **or**
+  `m65-client 192.168.0.65 6510 some_command1 [possible command1 parameters] , some_command2 [possible command1 parameters] , ...`
 
 The first version simply prints some help (and list of available commands). It does not
 try to establish connection with M65.
@@ -30,7 +38,8 @@ attached to your LAN. In the examples, `192.168.0.65` can be replaced with your 
 needs, also the port `6510`, if you re-configured eth-tool and recompiled it to use
 a different one.
 
-Third version directly accepts a command to be executed, then client exits. The second
+Third version directly accepts a command to be executed, then client exits (though there is
+the form to give multiple commands separated by comma - a comma which is surrounded by spaces). The second
 version however present you a shell, where you can use multiple commands one by one before
 you exit (by pressing CTRL-C at empty prompt, or using the `exit` command). The command
 names are the same though for the command line and interactive versions. You can use
@@ -60,17 +69,20 @@ This is the interactive shell, you remains there till you exit.
 Note: the exact list of available commands, their exact meanings, etc is not fixed yet,
 as it's an early stage of the project.
 
-### Command memdump
+### Command: memdump
 
 It reads the first 256K memory of M65 and dumps that into a file named `mem.dmp`.
+It also gives some stat on the commnuncation performance, so it can be used to
+judge that as well, without involving SD-card which can be the bottleneck of the
+speed (see: command `sdtest`).
 
-### Command memrd
+### Command: memrd 0x400
 
 This commands requires a parameter (can be hex with 0x or $ prefix) and will cause
 to display the memory content of your M65 at the given value. The address itself
 is an M65-specific "linear" 28 bit address.
 
-### Command nbd
+### Command: nbd /dev/nbd0
 
 This is a quite heavy one. It implements an NBD bloack device, with the "storage"
 being your M65 via the network. After that, you can use this on your Linux box,
@@ -86,7 +98,7 @@ as any other block device, like `/dev/sda` or whatever, just now you need to use
   use NBD already, it may need to use another numbered device.
 * You must give the device name as a parameter after the `nbd` command.
 * You can use both the shell or the command line mode to give this command though.
-* There is no way to stop this command, you need to use CTRL-C. **however it is
+* There is no way to stop this command, you need to use CTRL-C. **However it is
   very dangerous too, especally, if your nbd device is in use, like mounted, etc
   meanwhile. Be sure you did `umount` for those (if any), and issued a `sync`
   command, also wait for I/O traffic settles down after these (it can take
@@ -101,18 +113,18 @@ as any other block device, like `/dev/sda` or whatever, just now you need to use
   to gather I/O groupped and then it's already too late to realize it won't
   work. Probably that's a bug in my code though :)
 
-**CURRENTLY write access is NOT supported via NBD!**
+** CURRENTLY write access is NOT supported via NBD! **
 
-### Command sdpart
+### Command: sdpart
 
 Displays the partition table of your SD-card on your M65.
 
-### Command sdrd
+### Command: sdrd 0
 
 Reads a given sector (this commands needs a parameter: the sector to be read)
 and displays it as a form of hex dump.
 
-### Command sdsize
+### Command: sdsize
 
 This commands does an SD card size detection process, by interpolating size
 with trying sizes on various decremanted bit mask to be able to figure out
@@ -122,7 +134,7 @@ are normal (sector cannot be read), since this is how it works, actually.
 Note: `nbd` actually runs this command first, since it must know the actual size
 of the SD-card!
 
-### Command sdtest
+### Command: sdtest
 
 Reads and dumps of sector 0 (as a basic test, if it works), and also does a
 performance test with reading 1000 sectors, so you must wait a bit. You will
@@ -137,7 +149,7 @@ get some kind of stats on this process at the end.
     Sectors/second: 771.685918
     Kilobytes/second: 385.842959
 
-### Command test
+### Command: test
 
 This is the most basic test, without too much sane goal. It pushes the current
 local time of your Linux box onto the M65's screen, and grabs the first line
