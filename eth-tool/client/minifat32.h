@@ -43,7 +43,8 @@ extern int mfat32_mount (
 	unsigned int set_starting_sector,
 	unsigned int set_partition_size
 );
-extern int mfat32_dir_findfirst ( struct mfat32_dir_entry *entry );
-extern int mfat32_dir_findnext ( struct mfat32_dir_entry *entry );
+extern int mfat32_dir_get_next_entry ( struct mfat32_dir_entry *entry, int first );
+extern int mfat32_dir_find_file ( const char *filename, struct mfat32_dir_entry *entry );
+extern int mfat32_download_file ( const char *fat_filename, const char *host_filename );
 
 #endif

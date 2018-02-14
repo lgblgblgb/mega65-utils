@@ -104,7 +104,7 @@ int mfat32_mount (
 	unsigned int set_starting_sector,
 	unsigned int set_partition_size
 ) {
-	int a;
+	unsigned int total_size;
 	int logical_sector_size;
 	unsigned char boot[512];
 	fs.valid = 0;	// starting as invalid, before using ...
@@ -131,17 +131,26 @@ int mfat32_mount (
 	}
 	logical_sector_size = boot[0xB] | (boot[0xC] << 8);
 	if (logical_sector_size < 512 || (logical_sector_size & 511)) {
-		fprintf(stderr, "FAT32: this driver supports only 512 bytes (or a multiple of it) per logical sector, not %d\n", a);
+		fprintf(stderr, "FAT32: this driver supports only 512 bytes (or a multiple of it) per logical sector, not %d\n", logical_sector_size);
 		return -1;
 	}
 	logical_sector_size /= 512;	// get the 512 bytes size of the logical sector
 	fs.fat_size = (boot[0x24] | (boot[0x25] << 8) | (boot[0x26] << 16) | (boot[0x27] << 24)) * logical_sector_size;
 	fs.root_directory = boot[0x2C] | (boot[0x2D] << 8) | (boot[0x2E] << 16) | (boot[0x2F] << 24);	// cluster of root directory
-	fs.cluster_size = (boot[0xD] | (boot[0xE] << 8)) * logical_sector_size;
+	fs.cluster_size = boot[0xD] * logical_sector_size;
 	fs.fat_start = (boot[0xE] | (boot[0xF] << 8)) * logical_sector_size + fs.part_start;	// reserved logical sectors, then FAT, so get the size from it
 	fs.fat2_start = fs.fat_start + fs.fat_size;
 	fs.fs_start = fs.fat2_start + fs.fat_size;
-	fs.total_clusters = (long long int)((long long int)(boot[0x20] | (boot[0x21] << 8) | (boot[0x22] << 16) | (boot[0x23] << 24)) * (long long int)logical_sector_size / (long long int)fs.cluster_size);
+	total_size = boot[0x13] | (boot[0x14] << 8);	// total logical sectors
+	if (!total_size)	// if WORD entry at 0x13 is zero, use the dword entry at 0x20
+		total_size = boot[0x20] | (boot[0x21] << 8) | (boot[0x22] << 16) | (boot[0x23] << 24);
+	total_size *= logical_sector_size;	// get the total size in real sectors
+	total_size -= fs.fs_start;		// this amount of sectors before the FS area
+	fs.total_clusters = total_size / fs.cluster_size - 2;
+	//fs.total_clusters = (long long int)((long long int)(boot[0x20] | (boot[0x21] << 8) | (boot[0x22] << 16) | (boot[0x23] << 24)) * (long long int)logical_sector_size / (long long int)fs.cluster_size);
+	printf("Total clusters: %d\n", fs.total_clusters);
+	printf("Cluster size: %d\n", fs.cluster_size);
+	printf("Logical sector size: %d\n", logical_sector_size);
 	// **** Seems to be valid, set some things for initial values
 	fs.valid = 1;
 	fs.fat_cached_sector = -1;
@@ -184,8 +193,10 @@ static int read_next_sector ( void *buffer )
 			return 1;	// end-of-chain situation
 	}
 	// Calculate current absolute sector, and read it!
-	if (fs.current_cluster < 2 || fs.current_cluster > fs.total_clusters)
+	if (fs.current_cluster < 2 || fs.current_cluster > fs.total_clusters) {
+		fprintf(stderr, "FAT32: invalid cluster (%d) for read_next_sector() ...\n", fs.current_cluster);
 		return -1;
+	}
 	return fs.read_sector((fs.current_cluster - 2) * fs.cluster_size + fs.fs_start + fs.in_cluster_index, buffer);
 }
 
@@ -203,8 +214,13 @@ static void name_copy ( char *dst, const unsigned char *src, int len )
 #define DIRENTRY(n) fs.dir_cache[fs.dir_pointer+(n)]
 
 
-int mfat32_dir_findnext ( struct mfat32_dir_entry *entry )
+int mfat32_dir_get_next_entry ( struct mfat32_dir_entry *entry, int first )
 {
+	if (first) {
+		open_object(fs.current_directory);
+		fs.dir_pointer = 480;	// force re-read with over sector size pointer
+		dir_end = 0;
+	}
 	if (dir_end) {
 		fprintf(stderr, "FAT32: calling mfat32_dir_findnext() when directory is over\n");
 		return -1;
@@ -247,16 +263,54 @@ int mfat32_dir_findnext ( struct mfat32_dir_entry *entry )
 }
 
 
-int mfat32_dir_findfirst ( struct mfat32_dir_entry *entry )
+
+int mfat32_dir_find_file ( const char *filename, struct mfat32_dir_entry *entry )
 {
-	open_object(fs.current_directory);
-	fs.dir_pointer = 480;	// force re-read with over sector size pointer
-	dir_end = 0;
-	return mfat32_dir_findnext(entry);
+	int first = 1, ret;
+	for (;;) {
+		ret = mfat32_dir_get_next_entry(entry, first);
+		first = 0;
+		if (ret)
+			return ret;	// not found, because end of directory hit, and no hit yet
+		if (!strcasecmp(entry->full_name, filename))
+			return 0;	// found, yeah :-)
+	}
 }
 
 
-
-
-
-
+int mfat32_download_file ( const char *fat_filename, const char *host_filename )
+{
+	FILE *fp;
+	struct mfat32_dir_entry entry;
+	int original_size = -1;
+	if (mfat32_dir_find_file(fat_filename, &entry)) {
+		fprintf(stderr, "Source file (@SD) cannot be found\n");
+		return -1;
+	}
+	open_object(entry.cluster);
+	printf("Downloading %d bytes of data from SD-card file %s to local file %s ...\n", entry.size, entry.full_name, host_filename);
+	fp = fopen(host_filename, "wb");
+	if (!fp) {
+		perror("Cannot create/open local file");
+		return -1;
+	}
+	original_size = entry.size;
+	while (entry.size > 0) {
+		unsigned char buffer[512];
+		int piece_size = (entry.size >= 512 ? 512 : entry.size);
+		int ret = read_next_sector(buffer);
+		if (ret) {
+			fprintf(stderr, "FAT32: shorter file in FAT than by its directory entry size, or I/O error [%d]\n", ret);
+			fclose(fp);
+			return -1;
+		}
+		if (fwrite(buffer, piece_size, 1, fp) != 1) {
+			perror("Write error at the local side");
+			fclose(fp);
+			return -1;
+		}
+		entry.size -= piece_size;
+	}
+	fclose(fp);
+	return original_size;
+}

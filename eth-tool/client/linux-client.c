@@ -79,7 +79,7 @@ static struct {
 static int partitions_discovered = 0;
 
 static struct {
-	int start, size;
+	int start, size, fat32;
 } partitions[4];
 
 
@@ -751,7 +751,7 @@ static int sd_read_sector_to_buffer ( unsigned int sector, unsigned char *data )
 	if (!ret) {
 		memcpy(data, com.sector, 512);
 	}
-	printf("FAT32 subsys has read sector %d, result: %d\n", sector, ret);
+	//printf("FAT32 subsys has read sector %d, result: %d\n", sector, ret);
 	return ret;
 }
 
@@ -1086,6 +1086,7 @@ static int cmd_sdpart ( int argc, char **argv )
 		size  = p[12] | (p[13] << 8) | (p[14] << 16) | (p[15] << 24);
 		partitions[i].start = start;
 		partitions[i].size = size;
+		partitions[i].fat32 = 0;
 		printf("  status=$%02X type=$%02X CHS:start[ignored]=%d,%d,%d CHS:end[ignored]=%d,%d,%d LBA:start=$%X LBA:size=$%X (~ %d Mbytes)\n",
 			p[0], p[4],
 			p[3] + ((p[2] & 0xC0) << 2),	// cylinder start
@@ -1100,9 +1101,10 @@ static int cmd_sdpart ( int argc, char **argv )
 		);
 		if (start == 0 || size == 0 )
 			printf("  this partition seems to be unused (no valid LBA data or unrealistic ones - we only handle LBA!)\n");
-		else if (p[4] == 0x0B || p[4] == 0x0C)
+		else if (p[4] == 0x0B || p[4] == 0x0C) {
 			printf("  seems to be a FAT32 partition: $%02X\n", p[4]);
-		else
+			partitions[i].fat32 = 1;
+		} else
 			printf("  unknown (for us) partition type $%02X\n", p[4]);
 	}
 	partitions_discovered = 1;
@@ -1126,7 +1128,7 @@ static int cmd_sdwrtest ( int argc, char **argv )
 static int cmd_dirtest ( int argc , char **argv )
 {
 	struct mfat32_dir_entry entry;
-	int ret;
+	int ret, first;
 	if (!partitions_discovered) {
 		fprintf(stderr, "No partitions discovered yet. Use the sdpart command first!\n");
 		return 1;
@@ -1136,12 +1138,45 @@ static int cmd_dirtest ( int argc , char **argv )
 		return 1;
 	}
 	// Do the directory listing!
-	ret = mfat32_dir_findfirst(&entry);
-	for (;;) {
-		if (ret)
-			return ret < 0 ? ret : 0;
-		printf("  %-15s%d @%d\n", entry.full_name, entry.size, entry.cluster);
-		ret = mfat32_dir_findnext(&entry);
+	first = 1;
+	do {
+		ret = mfat32_dir_get_next_entry(&entry, first);
+		first = 0;
+		if (!ret) {
+			printf("  %-15s%d @%d %s\n", entry.full_name, entry.size, entry.cluster, entry.type & MFAT32_DIR ? "<DIR>" : "file");
+		}
+	} while (!ret);
+	return ret < 0 ? ret : 0;
+}
+
+
+static int cmd_download ( int argc, char **argv )
+{
+	struct timeval tv1, tv2;
+	int ret;
+	if (!partitions_discovered) {
+		fprintf(stderr, "No partitions discovered yet. Use the sdpart command first!\n");
+		return 1;
+	}
+	if (mfat32_mount(sd_read_sector_to_buffer, sd_write_sector, partitions[0].start, partitions[0].size)) {
+		fprintf(stderr, "Cannot use this partition as FAT32, refer previous error(s)\n");
+		return 1;
+	}
+	if (argc != 2) {
+		fprintf(stderr, "This command requires two parameters: file name on the SD-card, and target file name on your computer.\n");
+		return 1;
+	}
+	gettimeofday(&tv1, NULL);
+	ret = mfat32_download_file (argv[0], argv[1]);
+	gettimeofday(&tv2, NULL);
+	if (ret < 0) {
+		fprintf(stderr, "Download failed :(\n");
+		return 1;
+	} else {
+		double st = (double)(tv2.tv_usec - tv1.tv_usec) / 1000000.0 + (double)(tv2.tv_sec - tv1.tv_sec);
+		st = st > 0.0 ? ret / st / 1024.0 : 0;
+		printf("File downloaded, %d bytes, avg xfer speed ~ %f Kbytes/sec.\n", ret, st);
+		return 0;
 	}
 }
 
@@ -1155,7 +1190,8 @@ static const struct {
 	int (*func)(int,char**);
 	const char *help;
 } cmd_tab[] = {
-	{ "dirtest", cmd_dirtest, "Simple test, trying directory ..." },
+	{ "download", cmd_download, "Download a file from SD-card (FAT and local filenames must be specified)" },
+	{ "dir", cmd_dirtest, "Simple test, trying directory ..." },
 	{ "test", cmd_test, "Simple test to put clock on M65 screen, and read first line of M65 screen back" },
 	{ "sdpart", cmd_sdpart, "Parition table on the M65's SD-card" },
 	{ "sdtest", cmd_sdtest, "SD-Card read-test for two sectors, and performance test on multiple reading" },
@@ -1163,7 +1199,7 @@ static const struct {
 	{ "sdrd", cmd_sdrdsect, "Reads a given sector from SD-card (paramter is the sector number)" },
 	{ "sdwrtest", cmd_sdwrtest, "DANGEROUS write test on sector #1 !!!!" },
 	{ "memdump", cmd_memdump, "Dumps M65's memory (first 256K) into file mem.dmp" },
-	{ "memrd", cmd_memrd, "Reads the (linear) M65 memory map from given address (parameter)" },
+	{ "memrd", cmd_memrd, "Reads and dumps M65 memory at a given (linear) M65 address (parameter)" },
 	{ "nbd", cmd_nbd, "Creates an NBD device which can be mounted on Linux (requires device name)" },
 	{ "-h", cmd_help, NULL },	// -h is here, since this is used by cmd-line as well, and "help" can be a hostname too by the non-shell syntax ...
 	{"help", cmd_help, NULL },
