@@ -18,11 +18,19 @@
 
 .INCLUDE	"common.i65"
 
+
+PROTOCOL_VERSION	= 0
+
+
 .RODATA
 
 monitor_example_answer:
-	.BYTE "I hear you, dude :) Watch your border ...", 13, 10
+	.BYTE "M65 eth-tool monitor", 13, 10
 monitor_example_answer_size = * - monitor_example_answer
+	.BYTE	0 ; an extra zero here!!!!
+
+; The binary protocol marker *BUT* backwards :-D We can save a CPY op this way, wow ;-P
+magic:	.BYTE "*56M", 0
 
 .CODE
 
@@ -72,7 +80,7 @@ default_user_callback = mon_mem_copy_param_fetch::ret
 	LDY	#4	; yes, "magic" checking is in backwards ...
 :	LDA	(mon_in),Z
 	CMP	magic,Y
-	LBNE	text_mode_protocol	; check failed, maybe text mode protocol is used
+	BNE	text_mode_protocol	; check failed, maybe text mode protocol is used
 	STA	(mon_out),Z
 	INW	mon_in			; yes, using INW seems to be overkill, but you'll see later things complicated when we need to get/fetch objects with given size, etc
 	INW	mon_out
@@ -122,18 +130,43 @@ default_user_callback = mon_mem_copy_param_fetch::ret
 command_loop:
 	LDA	(mon_in),Z			; read command
 	INW	mon_in
-	; resolve command
-	DEA
-	BEQ	cmd_read	; command byte was '1'
-	DEA
-	BEQ	cmd_write	; command byte was '2'
-	DEA
-	BEQ	cmd_end		; command byte was '3'
-	DEA
-	BEQ	cmd_call	; command byte was '4'
-	DEA
-	BEQ	cmd_sdwait	; command byte was '5'
-	; Illegal command detected!
+	CMP	#6		; last command code + 1
+	BCS	illegal_command
+	ASL	A
+	TAX
+	JMP	(command_table,X)
+
+text_mode_protocol:
+	MEMCPY	TX_ETH_PAYLOAD+28, monitor_example_answer, monitor_example_answer_size
+	LDA	#monitor_example_answer_size
+	JMP	udp_answer_tx_short
+
+command_table:
+	.WORD	cmd_identify	; command 0, identify, special command MUST NOT BE used chained with any other command! Return will have $FE "error"!
+	.WORD	cmd_read	; command 1, memory read
+	.WORD	cmd_write	; command 2, memory write
+	.WORD	cmd_end		; command 3, end of request
+	.WORD	cmd_call	; command 4, user call
+	.WORD	cmd_sdwait	; command 5, SD busy wait + status response
+
+cmd_identify:
+
+	LDX	#$FF
+	LDA	#.LOBYTE(PROTOCOL_VERSION)	
+	STA	(mon_out),Z
+	INW	mon_out
+	LDA	#.HIBYTE(PROTOCOL_VERSION)
+	STA	(mon_out),Z
+:	INW	mon_out
+	INX
+	LDA	monitor_example_answer,X
+	STA	(mon_out),Z
+	BNE	:-
+	INW	mon_out
+	LDA	#$FE
+	BRA	answer
+
+illegal_command:
 	LDA	#2
 	BRA	answer			; answer with error code '2'
 
@@ -182,7 +215,7 @@ cmd_write:
 	INW	mon_copy+2
 	DEW	mon_copy
 	BNE	:-
-	BRA	command_loop
+	JMP	command_loop
 
 cmd_end:
 	LDA	#0		; no error code if we hit this point!
@@ -204,18 +237,7 @@ answer:
 user_callback_addr = * + 1	; beware: self modification point!
 	JMP	$FFFF	; user callback must return with 'RTS'
 
-text_mode_protocol:
-	MEMCPY	TX_ETH_PAYLOAD+28, monitor_example_answer, monitor_example_answer_size
-	INC	53280
-	LDA	#monitor_example_answer_size
-	JMP	udp_answer_tx_short
 .ENDPROC
-
-
-.RODATA
-
-; The binary protocol marker *BUT* backwards :-D We can save a CPY op this way, wow ;-P
-magic:	.BYTE "*56M", 0
 
 
 .ZEROPAGE

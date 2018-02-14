@@ -43,6 +43,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include <readline/readline.h>
 #include <readline/history.h>
 #endif
+#include "minifat32.h"
 
 
 #define MAX_MTU_INITIAL 1472
@@ -66,6 +67,7 @@ static struct {
 	int round_trip_usec;
 	int retransmissions;
 	int retransmit_timeout_usec;
+	int m65_error_code;
 	int sdhc;
 	int sdsize;
 	int sdstatus;
@@ -73,6 +75,12 @@ static struct {
 	int debug;
 	int has_answer;
 } com;
+
+static int partitions_discovered = 0;
+
+static struct {
+	int start, size;
+} partitions[4];
 
 
 
@@ -396,6 +404,7 @@ static int msg_commit ( void )
 	gettimeofday(&tv1, NULL);
 	com.in_progress_msg = 0;
 	com.has_answer = 0;
+	com.m65_error_code = -1;
 
 	retrans_here = 0;
 retransmit:
@@ -467,8 +476,9 @@ rerecv:
 		fprintf(stderr, "Internal mismtach, received size (%d) is not the same what the answer states (%d) to be\n", com.r_size, com.m65_size);
 		return -1;
 	}
-	if (com.r_buf[7]) {
-		fprintf(stderr, "eth-tool monitor on M65 reports error, error code = $%02X\n", com.r_buf[7]);
+	com.m65_error_code = com.r_buf[7];
+	if (com.m65_error_code) {
+		fprintf(stderr, "eth-tool monitor on M65 reports error, error code = $%02X\n", com.m65_error_code);
 		return -1;
 	}
 	if (com.r_size != com.ans_size_expected) {
@@ -735,6 +745,17 @@ static int sd_read_sector ( unsigned int sector )
 	}
 }
 
+static int sd_read_sector_to_buffer ( unsigned int sector, unsigned char *data )
+{
+	int ret = sd_read_sector(sector);
+	if (!ret) {
+		memcpy(data, com.sector, 512);
+	}
+	printf("FAT32 subsys has read sector %d, result: %d\n", sector, ret);
+	return ret;
+}
+
+
 
 static void print_sd_size ( void )
 {
@@ -893,7 +914,7 @@ static int test_mss_and_connectivity ( void )
 		// fool msg_commit now, we want to send, but totally invalid message ...
 		printf("Trying to connect server with MSS (MTU - protocol_overhead) size %d ...\n", com.mtu_size);
 		msg_begin();
-		com.s_p[0] = 0;	// insert an invalid command ...
+		com.s_p[0] = 0;	// insert an identify command
 		com.s_p[1] = 3;	// close the command chain just in case ...
 		com.s_p = com.s_buf + com.mtu_size - 1;
 		msg_commit();
@@ -915,6 +936,12 @@ static int test_mss_and_connectivity ( void )
 		sleep(1);*/
 	}
 	printf("MSS size discovered: %d\n", com.mtu_size);
+	if (com.m65_error_code == 0xFE) {
+		printf("Valid identify error code :-)\n protocol version = %d, welcome = %s\n",
+			com.r_buf[8] + (com.r_buf[9] << 8),
+			com.r_buf + 10
+		);
+	}
 	return 0;
 }
 
@@ -1057,6 +1084,8 @@ static int cmd_sdpart ( int argc, char **argv )
 		hex_dump(p, 16, partition_entry_title, o);
 		start = p[8] | (p[9] << 8) | (p[10] << 16) | (p[11] << 24);
 		size  = p[12] | (p[13] << 8) | (p[14] << 16) | (p[15] << 24);
+		partitions[i].start = start;
+		partitions[i].size = size;
 		printf("  status=$%02X type=$%02X CHS:start[ignored]=%d,%d,%d CHS:end[ignored]=%d,%d,%d LBA:start=$%X LBA:size=$%X (~ %d Mbytes)\n",
 			p[0], p[4],
 			p[3] + ((p[2] & 0xC0) << 2),	// cylinder start
@@ -1076,6 +1105,7 @@ static int cmd_sdpart ( int argc, char **argv )
 		else
 			printf("  unknown (for us) partition type $%02X\n", p[4]);
 	}
+	partitions_discovered = 1;
 	return 0;
 }
 
@@ -1093,6 +1123,29 @@ static int cmd_sdwrtest ( int argc, char **argv )
 }
 
 
+static int cmd_dirtest ( int argc , char **argv )
+{
+	struct mfat32_dir_entry entry;
+	int ret;
+	if (!partitions_discovered) {
+		fprintf(stderr, "No partitions discovered yet. Use the sdpart command first!\n");
+		return 1;
+	}
+	if (mfat32_mount(sd_read_sector_to_buffer, sd_write_sector, partitions[0].start, partitions[0].size)) {
+		fprintf(stderr, "Cannot use this partition as FAT32, refer previous error(s)\n");
+		return 1;
+	}
+	// Do the directory listing!
+	ret = mfat32_dir_findfirst(&entry);
+	for (;;) {
+		if (ret)
+			return ret < 0 ? ret : 0;
+		printf("  %-15s%d @%d\n", entry.full_name, entry.size, entry.cluster);
+		ret = mfat32_dir_findnext(&entry);
+	}
+}
+
+
 
 
 static int cmd_help ( int argc, char **argv );
@@ -1102,6 +1155,7 @@ static const struct {
 	int (*func)(int,char**);
 	const char *help;
 } cmd_tab[] = {
+	{ "dirtest", cmd_dirtest, "Simple test, trying directory ..." },
 	{ "test", cmd_test, "Simple test to put clock on M65 screen, and read first line of M65 screen back" },
 	{ "sdpart", cmd_sdpart, "Parition table on the M65's SD-card" },
 	{ "sdtest", cmd_sdtest, "SD-Card read-test for two sectors, and performance test on multiple reading" },
