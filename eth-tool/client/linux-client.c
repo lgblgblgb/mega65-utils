@@ -44,6 +44,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include <readline/history.h>
 #endif
 #include "minifat32.h"
+#include "gfxdemo.h"
 
 
 #define MAX_MTU_INITIAL 1472
@@ -1181,6 +1182,168 @@ static int cmd_download ( int argc, char **argv )
 }
 
 
+static int push_gfx ( void )
+{
+	int addr = 0x6800;
+	unsigned char *fcm_tiles_p = fcm_tiles;
+	int usec = 0;
+	com.retransmit_timeout_usec = 1500;     // use a brutal one now, we don't want to wait :-@
+	do {
+		msg_begin();
+		msg_add_writemem(addr, 1280, fcm_tiles_p);
+		if (msg_commit()) {
+			com.retransmit_timeout_usec = RETRANSMIT_TIMEOUT_USEC;
+			return -1;
+		}
+		printf("Partial round-trip usecs = %d\n", com.round_trip_usec);
+		usec += com.round_trip_usec;
+		fcm_tiles_p += 1280;
+		if (addr == 0x6800 + (24 * 1280))
+		        addr = 0x14000;
+		else
+			addr += 1280;
+	} while (addr < 0x14000 + (25 * 1280));
+	com.retransmit_timeout_usec = RETRANSMIT_TIMEOUT_USEC;
+	printf("Round-trip time in usecs = %d\n", usec);
+	return 0;
+}
+
+
+static int push_palette ( void )
+{
+	msg_begin();
+	msg_add_writemem(M65_IO_ADDR(0xD100), 0x300, custom_palette);
+	return msg_commit();
+}
+
+
+
+static int cmd_gfxdemo ( int argc, char **argv )
+{
+//	unsigned char *fcm_tiles_p;
+	int addr;
+	double zoom;
+//	unsigned char palette[0x300];
+#if 0
+	for (int a = 0; a < 0x100; a++) {
+		int rev = ((a & 0xF) << 4) | ((a & 0xF0) >> 4);
+		palette[a] = rev;
+		palette[a+0x100] = rev;
+		palette[a+0x200] = rev;
+	}
+	msg_begin();
+	msg_add_writemem(M65_IO_ADDR(0xD100), 0x300, palette);
+	if (msg_commit())
+		return -1;
+#endif
+	create_mand_palette();
+	if (push_palette())
+		return -1;
+
+
+	// we hide our video RAM "behind" the mapped stuff for ethernet,
+	// so we reserve 2K space (we need 16bit char mode for 40*25) for
+	// video RAM, then tiles will start at $6800.
+	// we chop tiles two pieces so won't accress 64K boundary, overwrite
+	// DOS65 things etc. we continue
+	// tiles in hmm let's say ... $14000 for example ... [BANK1]
+	fcm_create_video_ram(0x6800, 0x14000, 0x6800 + (25 * 1280));
+	// we need two messages, since 2000 bytes wouldn't fit into a message
+	msg_begin();
+	msg_add_writemem(0x6000, 0x400, fcm_video_ram);
+	if (msg_commit())
+		return -1;
+	msg_begin();
+	msg_add_writemem(0x6400, 0x400, fcm_video_ram + 0x400);
+	if (msg_commit())
+		return -1;
+
+	msg_begin(); /*
+GS $D054.0 VIC-IV enable 16-bit character numbers (two screen bytes per character)
+GS $D054.1 VIC-IV enable full-colour mode for character numbers <=$FF
+GS $D054.2 VIC-IV enable full-colour mode for character numbers >$FF
+
+GS $D058 VIC-IV characters per logical text row (LSB)
+GS $D059 VIC-IV characters per logical text row (MSB)
+
+
+GS $D060 VIC-IV screen RAM precise base address (bits 0 - 7)
+GS $D061 VIC-IV screen RAM precise base address (bits 15 - 8)
+GS $D062 VIC-IV screen RAM precise base address (bits 23 - 16)
+GS $D063 VIC-IV screen RAM precise base address (bits 31 - 24) */
+	msg_add_writebyte(M65_IO_ADDR(0xD060), 0x00);
+	msg_add_writebyte(M65_IO_ADDR(0xD061), 0x60);
+	msg_add_writebyte(M65_IO_ADDR(0xD062), 0x00);
+	msg_add_writebyte(M65_IO_ADDR(0xD063), 0x00);
+	msg_add_writebyte(M65_IO_ADDR(0xD058), 80);
+	msg_add_writebyte(M65_IO_ADDR(0xD059), 0);
+	addr = msg_add_readmem(M65_IO_ADDR(0xD054), 1);
+	if (msg_commit())
+		return -1;
+
+	msg_begin();
+	msg_add_writebyte(M65_IO_ADDR(0xD054), com.r_buf[addr] | 7);
+	if (msg_commit())
+		return -1;
+
+	// LOOOOOPY!!!
+
+	//com.retransmit_timeout_usec = RETRANSMIT_TIMEOUT_USEC;
+	//com.retransmit_timeout_usec = 1500;	// use a brutal one now, we don't want to wait :-@
+
+
+	zoom = 0.5;
+	do {
+	//int usec;
+	//gfxdemo_mand_render(-0.75, 0, 1);       // render locally!
+	// 0.001643721971153 − 0.822467633298876i
+	gfxdemo_mand_render(0.001643721971153L, 0.822467633298876L, zoom);
+
+	if (push_gfx())
+		return -1;
+#if 0
+	// Upload tiles in 1280 byte long chunks (1024+256, hopefully safely fits any MSS on a LAN ...)
+	addr = 0x6800;
+	fcm_tiles_p = fcm_tiles;
+	usec = 0;
+	do {
+		msg_begin();
+		msg_add_writemem(addr, 1280, fcm_tiles_p);
+		if (msg_commit()) {
+			com.retransmit_timeout_usec = RETRANSMIT_TIMEOUT_USEC;
+			return -1;
+		}
+		printf("Partial round-trip usecs = %d\n", com.round_trip_usec);
+		usec += com.round_trip_usec;
+		fcm_tiles_p += 1280;
+		if (addr == 0x6800 + (24 * 1280))
+		        addr = 0x14000;
+		else
+			addr += 1280;
+	} while (addr < 0x14000 + (25 * 1280));
+
+	printf("Round-trip time in usecs = %d\n", usec);
+#endif
+
+	zoom = zoom + 0.1;
+
+	} while (zoom < 10.0);
+
+	sleep(1);
+
+	gfxdemo_convert_image(some_photo);
+	printf("Pushing PHOTO!\n");
+	if (push_palette())
+		return -1;
+	if (push_gfx())
+		return -1;
+
+
+	com.retransmit_timeout_usec = RETRANSMIT_TIMEOUT_USEC;
+
+	return 0;
+}
+
 
 
 static int cmd_help ( int argc, char **argv );
@@ -1190,6 +1353,7 @@ static const struct {
 	int (*func)(int,char**);
 	const char *help;
 } cmd_tab[] = {
+	{ "gfxdemo", cmd_gfxdemo, "Well, surprise :) - but you must watch your M65 screen meanwhile" },
 	{ "download", cmd_download, "Download a file from SD-card (FAT and local filenames must be specified)" },
 	{ "dir", cmd_dirtest, "Simple test, trying directory ..." },
 	{ "test", cmd_test, "Simple test to put clock on M65 screen, and read first line of M65 screen back" },
