@@ -18,6 +18,7 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 
 #include <stdio.h>
+#include <math.h>
 
 #define MAX_ITERATIONS 255
 
@@ -76,19 +77,27 @@ void gfxdemo_mand_render ( double x_center, double y_center, double zoom )
 }
 
 
-static inline unsigned char swap_nibs ( const unsigned char n ) {
-	return ((n & 0xF0) >> 4) | ((n & 0x0F) << 4);
+static inline unsigned char swap_nibs ( unsigned char n ) {
+	n = ((n & 0xF0) >> 4) | ((n & 0x0F) << 4);
+	return n;
 }
 
 
 void create_mand_palette ( void )
 {
 	for (int a = 0; a < 0x100; a++) {
+		custom_palette[a] = swap_nibs(cos(a / 8.0 + 10.0) * 255.0);
+		custom_palette[a + 0x100] = swap_nibs(cos(a / 5.0 + 20.0) * 255.0);
+		custom_palette[a + 0x200] = swap_nibs(cos(a / 6.0 + 30.0) * 255.0);
+		/*
 		int rev = swap_nibs(a);
 		custom_palette[a] = rev;
 		custom_palette[a+0x100] = rev;
-		custom_palette[a+0x200] = rev;
+		custom_palette[a+0x200] = rev;*/
 	}
+	custom_palette[0] = 0;
+	custom_palette[0x100] = 0;
+	custom_palette[0x200] = 0;
 }
 
 
@@ -99,9 +108,9 @@ void gfxdemo_convert_image ( const unsigned char *stripped_tga )
 {
 	int y;
 	for (y = 0; y < 256; y++) {
-		custom_palette[y + 0x000] = swap_nibs(*stripped_tga++);
-		custom_palette[y + 0x100] = swap_nibs(*stripped_tga++);
 		custom_palette[y + 0x200] = swap_nibs(*stripped_tga++);
+		custom_palette[y + 0x100] = swap_nibs(*stripped_tga++);
+		custom_palette[y + 0x000] = swap_nibs(*stripped_tga++);
 	}
 	for (y = 0; y < 200; y++) {
 		int x;

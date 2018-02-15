@@ -147,10 +147,9 @@ int mfat32_mount (
 	total_size *= logical_sector_size;	// get the total size in real sectors
 	total_size -= fs.fs_start;		// this amount of sectors before the FS area
 	fs.total_clusters = total_size / fs.cluster_size - 2;
-	//fs.total_clusters = (long long int)((long long int)(boot[0x20] | (boot[0x21] << 8) | (boot[0x22] << 16) | (boot[0x23] << 24)) * (long long int)logical_sector_size / (long long int)fs.cluster_size);
-	printf("Total clusters: %d\n", fs.total_clusters);
-	printf("Cluster size: %d\n", fs.cluster_size);
-	printf("Logical sector size: %d\n", logical_sector_size);
+	//printf("Total clusters: %d\n", fs.total_clusters);
+	//printf("Cluster size: %d\n", fs.cluster_size);
+	//printf("Logical sector size: %d\n", logical_sector_size);
 	// **** Seems to be valid, set some things for initial values
 	fs.valid = 1;
 	fs.fat_cached_sector = -1;
@@ -285,6 +284,10 @@ int mfat32_download_file ( const char *fat_filename, const char *host_filename )
 	int original_size = -1;
 	if (mfat32_dir_find_file(fat_filename, &entry)) {
 		fprintf(stderr, "Source file (@SD) cannot be found\n");
+		return -1;
+	}
+	if ((entry.type & MFAT32_DIR)) {
+		fprintf(stderr, "Directory cannot be downloaded, only files\n");
 		return -1;
 	}
 	open_object(entry.cluster);

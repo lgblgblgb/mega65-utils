@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -78,6 +79,7 @@ static struct {
 } com;
 
 static int partitions_discovered = 0;
+static int partition_selected = -1;
 
 static struct {
 	int start, size, fat32;
@@ -479,7 +481,8 @@ rerecv:
 	}
 	com.m65_error_code = com.r_buf[7];
 	if (com.m65_error_code) {
-		fprintf(stderr, "eth-tool monitor on M65 reports error, error code = $%02X\n", com.m65_error_code);
+		if (com.m65_error_code != 0xFE)
+			fprintf(stderr, "eth-tool monitor on M65 reports error, error code = $%02X\n", com.m65_error_code);
 		return -1;
 	}
 	if (com.r_size != com.ans_size_expected) {
@@ -938,10 +941,14 @@ static int test_mss_and_connectivity ( void )
 	}
 	printf("MSS size discovered: %d\n", com.mtu_size);
 	if (com.m65_error_code == 0xFE) {
-		printf("Valid identify error code :-)\n protocol version = %d, welcome = %s\n",
-			com.r_buf[8] + (com.r_buf[9] << 8),
-			com.r_buf + 10
+		const char *p = (char *)com.r_buf + 10;
+		printf("M65 SERVER REPLY: [ver:%d] ",
+			com.r_buf[8] + (com.r_buf[9] << 8)//,
+			//com.r_buf + 10
 		);
+		while (*p >= 32 && *p < 127)
+			putchar(*p++);
+		putchar('\n');
 	}
 	return 0;
 }
@@ -1070,6 +1077,28 @@ static char partition_entry_title[] = "PARTITION ENTRY #?";
 static int cmd_sdpart ( int argc, char **argv )
 {
 	int i;
+	if (argc) {
+		i = get_param_as_num(argv[0]);
+		if (i <= 0 || i > 4) {
+			fprintf(stderr, "When used with parameter, it must be 1,2,3 or 4 to select a partition\nUse without parameters to list partitions.\n");
+			return -1;
+		}
+		if (!partitions_discovered) {
+			if (cmd_sdpart(0, NULL))
+				return -1;
+			if (!partitions_discovered)
+				return -1;
+		}
+		i--;
+		if (partitions[i].fat32) {
+			partition_selected = i;
+			printf("Partition selected: #%d\n", i + 1);
+			return 0;
+		} else {
+			fprintf(stderr, "Partition #%d does not seem to be a FAT32 parition!\n", i + 1);
+			return -1;
+		}
+	}
 	if (sd_read_sector(0)) {
 		fprintf(stderr, "Cannot read MBR!\n");
 		return -1;
@@ -1108,6 +1137,14 @@ static int cmd_sdpart ( int argc, char **argv )
 		} else
 			printf("  unknown (for us) partition type $%02X\n", p[4]);
 	}
+	if (partition_selected == -1) {
+		if (partitions[0].fat32) {
+			printf("Partition auto-selected: #1\n");
+			partition_selected = 0;
+		} else {
+			fprintf(stderr,"Cannot auto-select partition#1, as it doesn't seem to be a FAT32 paritition ...\nUse sdpart command with parameter to select a specific partition to work with.\n");
+		}
+	}
 	partitions_discovered = 1;
 	return 0;
 }
@@ -1126,25 +1163,41 @@ static int cmd_sdwrtest ( int argc, char **argv )
 }
 
 
+static int use_some_partition ( void )
+{
+	if (!partitions_discovered)
+		cmd_sdpart(0, NULL);
+	if (!partitions_discovered) {
+		fprintf(stderr, "Partition discovery failure ...\n");
+		return -1;
+	}
+	if (partition_selected != -1) {
+		int ret = mfat32_mount(sd_read_sector_to_buffer, sd_write_sector, partitions[partition_selected].start, partitions[partition_selected].size);
+		if (ret) {
+			fprintf(stderr, "Cannot use this partition as FAT32, refer previous error(s)\n");
+			return ret;
+		}
+		printf("Using partition #%d\n", partition_selected + 1);
+		return 0;
+	}
+	fprintf(stderr, "No partition selected yet. Use the sdpart [n] command first!\n");
+	return 1;
+}
+
+
+
 static int cmd_dirtest ( int argc , char **argv )
 {
 	struct mfat32_dir_entry entry;
 	int ret, first;
-	if (!partitions_discovered) {
-		fprintf(stderr, "No partitions discovered yet. Use the sdpart command first!\n");
+	if (use_some_partition())
 		return 1;
-	}
-	if (mfat32_mount(sd_read_sector_to_buffer, sd_write_sector, partitions[0].start, partitions[0].size)) {
-		fprintf(stderr, "Cannot use this partition as FAT32, refer previous error(s)\n");
-		return 1;
-	}
-	// Do the directory listing!
 	first = 1;
 	do {
 		ret = mfat32_dir_get_next_entry(&entry, first);
 		first = 0;
 		if (!ret) {
-			printf("  %-15s%d @%d %s\n", entry.full_name, entry.size, entry.cluster, entry.type & MFAT32_DIR ? "<DIR>" : "file");
+			printf("  %-15s%9d @%d %s\n", entry.full_name, entry.size, entry.cluster, entry.type & MFAT32_DIR ? "<DIR>" : "<file-object>");
 		}
 	} while (!ret);
 	return ret < 0 ? ret : 0;
@@ -1155,14 +1208,8 @@ static int cmd_download ( int argc, char **argv )
 {
 	struct timeval tv1, tv2;
 	int ret;
-	if (!partitions_discovered) {
-		fprintf(stderr, "No partitions discovered yet. Use the sdpart command first!\n");
+	if (use_some_partition())
 		return 1;
-	}
-	if (mfat32_mount(sd_read_sector_to_buffer, sd_write_sector, partitions[0].start, partitions[0].size)) {
-		fprintf(stderr, "Cannot use this partition as FAT32, refer previous error(s)\n");
-		return 1;
-	}
 	if (argc != 2) {
 		fprintf(stderr, "This command requires two parameters: file name on the SD-card, and target file name on your computer.\n");
 		return 1;
@@ -1187,15 +1234,18 @@ static int push_gfx ( void )
 	int addr = 0x6800;
 	unsigned char *fcm_tiles_p = fcm_tiles;
 	int usec = 0;
+	int rounds = 0;
+	int old_timeout = com.retransmit_timeout_usec;
 	com.retransmit_timeout_usec = 1500;     // use a brutal one now, we don't want to wait :-@
 	do {
+		rounds++;
 		msg_begin();
 		msg_add_writemem(addr, 1280, fcm_tiles_p);
 		if (msg_commit()) {
-			com.retransmit_timeout_usec = RETRANSMIT_TIMEOUT_USEC;
+			com.retransmit_timeout_usec = old_timeout;
 			return -1;
 		}
-		printf("Partial round-trip usecs = %d\n", com.round_trip_usec);
+		//printf("Partial round-trip usec = %d\n", com.round_trip_usec);
 		usec += com.round_trip_usec;
 		fcm_tiles_p += 1280;
 		if (addr == 0x6800 + (24 * 1280))
@@ -1203,8 +1253,14 @@ static int push_gfx ( void )
 		else
 			addr += 1280;
 	} while (addr < 0x14000 + (25 * 1280));
-	com.retransmit_timeout_usec = RETRANSMIT_TIMEOUT_USEC;
-	printf("Round-trip time in usecs = %d\n", usec);
+	com.retransmit_timeout_usec = old_timeout;
+	printf("GFX TX: sum RTT %d usec, avg 1-msg RTT is %d usec [%d msgs] (max %.2f FPS) @ ~avg %d Kbytes/sec\n",
+		usec,
+		usec / rounds,
+		rounds,
+		1000000.0 / (double)usec,
+		1000000 / 1024 * 64000 / usec
+	);
 	return 0;
 }
 
@@ -1213,6 +1269,7 @@ static int push_palette ( void )
 {
 	msg_begin();
 	msg_add_writemem(M65_IO_ADDR(0xD100), 0x300, custom_palette);
+	msg_add_writebyte(M65_IO_ADDR(0xD021), 0x00);
 	return msg_commit();
 }
 
@@ -1220,26 +1277,12 @@ static int push_palette ( void )
 
 static int cmd_gfxdemo ( int argc, char **argv )
 {
-//	unsigned char *fcm_tiles_p;
 	int addr;
 	double zoom;
-//	unsigned char palette[0x300];
-#if 0
-	for (int a = 0; a < 0x100; a++) {
-		int rev = ((a & 0xF) << 4) | ((a & 0xF0) >> 4);
-		palette[a] = rev;
-		palette[a+0x100] = rev;
-		palette[a+0x200] = rev;
-	}
-	msg_begin();
-	msg_add_writemem(M65_IO_ADDR(0xD100), 0x300, palette);
-	if (msg_commit())
-		return -1;
-#endif
+
 	create_mand_palette();
 	if (push_palette())
 		return -1;
-
 
 	// we hide our video RAM "behind" the mapped stuff for ethernet,
 	// so we reserve 2K space (we need 16bit char mode for 40*25) for
@@ -1259,18 +1302,16 @@ static int cmd_gfxdemo ( int argc, char **argv )
 		return -1;
 
 	msg_begin(); /*
-GS $D054.0 VIC-IV enable 16-bit character numbers (two screen bytes per character)
-GS $D054.1 VIC-IV enable full-colour mode for character numbers <=$FF
-GS $D054.2 VIC-IV enable full-colour mode for character numbers >$FF
-
-GS $D058 VIC-IV characters per logical text row (LSB)
-GS $D059 VIC-IV characters per logical text row (MSB)
-
-
-GS $D060 VIC-IV screen RAM precise base address (bits 0 - 7)
-GS $D061 VIC-IV screen RAM precise base address (bits 15 - 8)
-GS $D062 VIC-IV screen RAM precise base address (bits 23 - 16)
-GS $D063 VIC-IV screen RAM precise base address (bits 31 - 24) */
+	GS $D054.0 VIC-IV enable 16-bit character numbers (two screen bytes per character)
+	GS $D054.1 VIC-IV enable full-colour mode for character numbers <=$FF
+	GS $D054.2 VIC-IV enable full-colour mode for character numbers >$FF
+	GS $D058 VIC-IV characters per logical text row (LSB)
+	GS $D059 VIC-IV characters per logical text row (MSB)
+	C65 $D030.2 Use PALETTE ROM or RAM entries for colours 0 - 15
+	GS $D060 VIC-IV screen RAM precise base address (bits 0 - 7)
+	GS $D061 VIC-IV screen RAM precise base address (bits 15 - 8)
+	GS $D062 VIC-IV screen RAM precise base address (bits 23 - 16)
+	GS $D063 VIC-IV screen RAM precise base address (bits 31 - 24) */
 	msg_add_writebyte(M65_IO_ADDR(0xD060), 0x00);
 	msg_add_writebyte(M65_IO_ADDR(0xD061), 0x60);
 	msg_add_writebyte(M65_IO_ADDR(0xD062), 0x00);
@@ -1278,55 +1319,26 @@ GS $D063 VIC-IV screen RAM precise base address (bits 31 - 24) */
 	msg_add_writebyte(M65_IO_ADDR(0xD058), 80);
 	msg_add_writebyte(M65_IO_ADDR(0xD059), 0);
 	addr = msg_add_readmem(M65_IO_ADDR(0xD054), 1);
+	msg_add_readmem(M65_IO_ADDR(0xD030), 1);	// do *NOT* move this line from the previous with "addr =" !!!!
 	if (msg_commit())
 		return -1;
 
 	msg_begin();
 	msg_add_writebyte(M65_IO_ADDR(0xD054), com.r_buf[addr] | 7);
+	msg_add_writebyte(M65_IO_ADDR(0xD030), com.r_buf[addr + 1] & (~4));
 	if (msg_commit())
 		return -1;
 
 	// LOOOOOPY!!!
 
-	//com.retransmit_timeout_usec = RETRANSMIT_TIMEOUT_USEC;
-	//com.retransmit_timeout_usec = 1500;	// use a brutal one now, we don't want to wait :-@
-
-
 	zoom = 0.5;
 	do {
-	//int usec;
-	//gfxdemo_mand_render(-0.75, 0, 1);       // render locally!
-	// 0.001643721971153 − 0.822467633298876i
-	gfxdemo_mand_render(0.001643721971153L, 0.822467633298876L, zoom);
-
-	if (push_gfx())
-		return -1;
-#if 0
-	// Upload tiles in 1280 byte long chunks (1024+256, hopefully safely fits any MSS on a LAN ...)
-	addr = 0x6800;
-	fcm_tiles_p = fcm_tiles;
-	usec = 0;
-	do {
-		msg_begin();
-		msg_add_writemem(addr, 1280, fcm_tiles_p);
-		if (msg_commit()) {
-			com.retransmit_timeout_usec = RETRANSMIT_TIMEOUT_USEC;
+		//gfxdemo_mand_render(-0.75, 0, 1);       // render locally!
+		// z = 0.001643721971153 − 0.822467633298876i
+		gfxdemo_mand_render(0.001643721971153L, 0.822467633298876L, zoom);
+		if (push_gfx())
 			return -1;
-		}
-		printf("Partial round-trip usecs = %d\n", com.round_trip_usec);
-		usec += com.round_trip_usec;
-		fcm_tiles_p += 1280;
-		if (addr == 0x6800 + (24 * 1280))
-		        addr = 0x14000;
-		else
-			addr += 1280;
-	} while (addr < 0x14000 + (25 * 1280));
-
-	printf("Round-trip time in usecs = %d\n", usec);
-#endif
-
-	zoom = zoom + 0.1;
-
+		zoom = zoom + 0.1;
 	} while (zoom < 10.0);
 
 	sleep(1);
@@ -1337,9 +1349,6 @@ GS $D063 VIC-IV screen RAM precise base address (bits 31 - 24) */
 		return -1;
 	if (push_gfx())
 		return -1;
-
-
-	com.retransmit_timeout_usec = RETRANSMIT_TIMEOUT_USEC;
 
 	return 0;
 }
@@ -1448,9 +1457,15 @@ static int m65_cmd_executor_multiple ( int argc, char** argv )
 
 static int m65_shell ( const char *hostname, int port )
 {
+	char history_file_path[PATH_MAX];
 	char prompt[80];
-	sprintf(prompt, "m65@%s:%d> ", hostname, port);
+	snprintf(prompt, sizeof prompt, "m65@%s:%d> ", hostname, port);
 	printf("*** Welcome to the M65-client shell! Press CTRL-D to exit with empty command line ***\n");
+	if (getenv("HOME")) {
+		snprintf(history_file_path, sizeof history_file_path, "%s/.m65clienthistory", getenv("HOME"));
+		read_history(history_file_path);
+	} else
+		*history_file_path = 0;
 	for (;;) {
 		char *args[80];
 		char *line = readline(prompt);
@@ -1482,6 +1497,8 @@ static int m65_shell ( const char *hostname, int port )
 		free(line);
 	}
 	printf("\nBy(T)e!\n");
+	if (*history_file_path)
+		write_history(history_file_path);
 	return 0;
 }
 
