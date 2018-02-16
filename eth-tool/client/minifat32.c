@@ -28,6 +28,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 static struct {
 	int valid;	// valid FS signal
 	int part_start; // absolute sector number for the partition itself, ie the "FS"
+	int part_size;
 	int fat_start;	// absolute sector number for the first FAT
 	int fat2_start;	// start of FAT#2
 	int fat_size;	// fat size in sectors
@@ -45,7 +46,9 @@ static struct {
 	int (*write_sector)(unsigned int, unsigned char*);
 	int (*read_sector)(unsigned int, unsigned char*);
 } fs = {
-	.valid = 0
+	.valid = 0,
+	.part_start = -1,
+	.part_size = -1
 };
 
 static int dir_end;
@@ -107,32 +110,39 @@ int mfat32_mount (
 	unsigned int total_size;
 	int logical_sector_size;
 	unsigned char boot[512];
+
+	if (fs.part_start == set_starting_sector && fs.part_size == set_partition_size && fs.part_start != -1) {
+		printf("Filesystem has been already in use [OK], boot record @ %d [%d sectors long]\n", set_starting_sector, set_partition_size);
+		return 0;
+	}
+
 	fs.valid = 0;	// starting as invalid, before using ...
 	if (set_partition_size < 2048) {
 		fprintf(stderr, "FAT32: Too small partition.\n");
-		return -1;
+		goto error;
 	}
 
 
 	fs.read_sector = reader_callback;
 	fs.write_sector = writer_callback;
 	fs.part_start = set_starting_sector;
+	fs.part_size = set_partition_size;
 	if (fs.read_sector(fs.part_start, boot)) {
 		fprintf(stderr, "FAT32: cannot read boot sector\n");
-		return -1;
+		goto error;
 	}
 	if (memcmp(boot + 0x52, fat32_id, sizeof fat32_id)) {
 		fprintf(stderr, "FAT32: file system id \"%s\" cannot be found. Maybe not a FAT32 volume.\n", fat32_id);
-		return -1;
+		goto error;
 	}
 	if (boot[0x10] != 2) {
 		fprintf(stderr, "FAT32: this driver only supports two FAT copies exactly, but here: %d\n", boot[0x10]);
-		return -1;
+		goto error;
 	}
 	logical_sector_size = boot[0xB] | (boot[0xC] << 8);
 	if (logical_sector_size < 512 || (logical_sector_size & 511)) {
 		fprintf(stderr, "FAT32: this driver supports only 512 bytes (or a multiple of it) per logical sector, not %d\n", logical_sector_size);
-		return -1;
+		goto error;
 	}
 	logical_sector_size /= 512;	// get the 512 bytes size of the logical sector
 	fs.fat_size = (boot[0x24] | (boot[0x25] << 8) | (boot[0x26] << 16) | (boot[0x27] << 24)) * logical_sector_size;
@@ -156,7 +166,12 @@ int mfat32_mount (
 	fs.current_cluster = -1;
 	fs.current_directory = fs.root_directory;
 	fs.in_cluster_index = -1;
+	printf("Filesystem has just been put into use, boot record @ %d [%d sectors long]\n", set_starting_sector, set_partition_size);
 	return 0;
+error:
+	fs.part_start = -1;
+	fs.part_size = -1;
+	return -1;
 }
 
 
@@ -274,6 +289,28 @@ int mfat32_dir_find_file ( const char *filename, struct mfat32_dir_entry *entry 
 		if (!strcasecmp(entry->full_name, filename))
 			return 0;	// found, yeah :-)
 	}
+}
+
+
+int mfat32_chdir ( const char *dirname )
+{
+	struct mfat32_dir_entry entry;
+	if (mfat32_dir_find_file(dirname, &entry)) {
+		fprintf(stderr, "Directory named \"%s\" cannot be found.\n", dirname);
+		return -1;
+	}
+	if (!(entry.type & MFAT32_DIR)) {
+		fprintf(stderr, "This is not a directory, but a file: \"%s\"\n", entry.full_name);
+		return -1;
+	}
+	fs.current_directory = entry.cluster;
+	return 0;
+}
+
+
+void mfat32_chroot ( void )
+{
+	fs.current_directory = fs.root_directory;
 }
 
 

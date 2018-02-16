@@ -19,7 +19,7 @@
 .INCLUDE	"common.i65"
 
 
-PROTOCOL_VERSION	= 0
+PROTOCOL_VERSION	= 1
 
 
 .RODATA
@@ -98,11 +98,14 @@ default_user_callback = mon_mem_copy_param_fetch::ret
 	;
 	; The request consists of series of commands (byte IDs), with possible parameters, command #3 closes the list, it *MUST* be there (otherwise you likely freeze your M65!)
 	; The commands are:
+	;	0 = special "identify" call, will result in $FE error by will, etc ...
 	;	1 = read memory: params: LENGTH as word, DWORD as 32 bit linear M65 address
 	;	2 = write memory: params: LENGTH as word, DWORD as 32 bit linear M65 address, then LENGTH number of bytes what you want to write to the selected address
 	;	3 = end of request marker
 	;	4 = call user machine code function: params: ADDR as _WORD_, and it's CPU address!! [call will happen after sending the answer back, thus the code can't pass info back in the same call]
 	;	5 = wait till SD-card is busy (saves us to do the check in a loop over the Net again and again ...). NO parameter, it waits, answer is expanded with a single byte, the original status read
+	;	6 = like command 1, but DMA accelerated, LENGTH is only *ONE* byte (meaning of 256 bytes of chunks) and target must be in DMA format!!!!!
+	;	7 = like the previous command, but for write/like command 2
 	;
 	; The answer is also starts with the mentioned 5 bytes marker. Then a WORD follows, describing the length of the answer INCLUDING markers, the size itself, and everything!
 	; Then a BYTE follows, which is the error code. If it's non-zero, that's an ERROR!!!
@@ -128,9 +131,10 @@ default_user_callback = mon_mem_copy_param_fetch::ret
 	; Note: also, user callback can be specified only once in the command chain. If more one is specified, only the last one will be called.
 
 command_loop:
+	LDZ	#0		; this is here, to set Z back to zero, if a command implementation may alterted it, which would crashes everything then ...
 	LDA	(mon_in),Z			; read command
 	INW	mon_in
-	CMP	#6		; last command code + 1
+	CMP	#8		; last command code + 1
 	BCS	illegal_command
 	ASL	A
 	TAX
@@ -148,6 +152,8 @@ command_table:
 	.WORD	cmd_end		; command 3, end of request
 	.WORD	cmd_call	; command 4, user call
 	.WORD	cmd_sdwait	; command 5, SD busy wait + status response
+	.WORD	cmd_dma_read	; command 6, DMA accelerated read for multiple of 256 bytes
+	.WORD	cmd_dma_write	; command 7, DMA accelerated write for multiple of 256 bytes
 
 cmd_identify:
 
@@ -169,6 +175,27 @@ cmd_identify:
 illegal_command:
 	LDA	#2
 	BRA	answer			; answer with error code '2'
+
+cmd_end:
+	LDA	#0		; no error code if we hit this point!
+answer:
+	; Well done. Calulate the size of our answer ...
+	STA	TX_ETH_PAYLOAD+28+5+2		; store error code!
+	SEC
+	LDA	mon_out
+	SBC	#.LOBYTE(TX_ETH_PAYLOAD+28)
+	STA	TX_ETH_PAYLOAD+28+5+0
+	TAY			; remember low byte of size for udp_answer_tx_long
+	LDA	mon_out+1
+	SBC	#.HIBYTE(TX_ETH_PAYLOAD+28)
+	STA	TX_ETH_PAYLOAD+28+5+1
+	TAX			; move high byte for size into X, for udp_answer_tx_long below
+	TYA			; ... and low byte to A
+	; Time to answer via the network.
+	JSR	udp_answer_tx_long
+user_callback_addr = * + 1	; beware: self modification point!
+	JMP	$FFFF	; user callback must return with 'RTS'
+
 
 	; *NOTE* This is *LARGELY* non-optimal solution what we use here. One thing is DMA, the other is all INW/DEW stuffs.
 	; DMA would be the best, but I was lazy to calculate all the addresses, especially when mon_in is in
@@ -193,7 +220,7 @@ cmd_call:
 	LDA	(mon_in),Z
 	INW	mon_in
 	STA	user_callback_addr+1
-	BRA	command_loop
+	JMP	command_loop
 
 cmd_read:
 	JSR	mon_mem_copy_param_fetch
@@ -204,7 +231,7 @@ cmd_read:
 	INW	mon_out
 	DEW	mon_copy
 	BNE	:-
-	BRA	command_loop
+	JMP	command_loop
 
 cmd_write:
 	JSR	mon_mem_copy_param_fetch
@@ -217,27 +244,164 @@ cmd_write:
 	BNE	:-
 	JMP	command_loop
 
-cmd_end:
-	LDA	#0		; no error code if we hit this point!
-answer:
-	; Well done. Calulate the size of our answer ...
-	STA	TX_ETH_PAYLOAD+28+5+2		; store error code!
-	SEC
+; DMA "accelerated" read/write is tricky, because we need to calculate
+; the linear address of mon_in or mon_out, which is otherwise used
+; as CPU MAP'ed area here. It's true, that on long term, the *WHOLE*
+; eth-tool should be ported to operate on "regular" non-MAP'ed memory
+; with also using DMA to "download" RX buffer and "upload" TX, maybe.
+; Also, it does not make too much sense to use DMA ops on small data.
+; So for dma read/write only whole 256 bytes can be read/written,
+; thus, for "length" one byte is enough in the operation description.
+; Moreover, to simplify things, client must issue linear addresses in
+; DMA specific form, ie, 3 byte for max of 1Mbyte in it ("within megabyte")
+; and the MSB for being the selected megabyte itself.
+; *** WARNING: we modify register Z!!!! But at label command_loop it will be restored anyway.
+
+cmd_dma_read:
+	; Store op LEN, only _ONE_ byte, meaning number of 256 bytes
+	LDA	(mon_in),Z
+	INW	mon_in
+	STA	dmalist_readcmd_length_hi
+	; Source address
+	LDA	(mon_in),Z
+	INW	mon_in
+	STA	dmalist_readcmd_source
+	LDA	(mon_in),Z
+	INW	mon_in
+	STA	dmalist_readcmd_source + 1
+	LDA	(mon_in),Z
+	INW	mon_in
+	AND	#$F
+	STA	dmalist_readcmd_source + 2
+	LDA	(mon_in),Z
+	INW	mon_in
+	STA	dmalist_readcmd_source_megabyte_enhanced_option
+	; OK. Now we need to calulate the meaning is current "mon_out"
+	; pointer in terms of linear address in the TX buffer.
+	; mon_in is CPU MAP'ed based on TX buffer at CPU address $6800
+	; the linear M65 address for the same is: $FFDE800
 	LDA	mon_out
-	SBC	#.LOBYTE(TX_ETH_PAYLOAD+28)
-	STA	TX_ETH_PAYLOAD+28+5+0
-	TAY			; remember low byte of size for udp_answer_tx_long
-	LDA	mon_out+1
-	SBC	#.HIBYTE(TX_ETH_PAYLOAD+28)
-	STA	TX_ETH_PAYLOAD+28+5+1
-	TAX			; move high byte for size into X, for udp_answer_tx_long below
-	TYA			; ... and low byte to A
-	; Time to answer via the network.
-	JSR	udp_answer_tx_long
-user_callback_addr = * + 1	; beware: self modification point!
-	JMP	$FFFF	; user callback must return with 'RTS'
+	STA	dmalist_readcmd_target		; the low byte of the address is the same
+	LDA	mon_out + 1
+	TAX
+	CLC
+	ADC	#$80				; $E8-$68 = $80
+	STA	dmalist_readcmd_target + 1
+	TXA
+	CLC
+	ADC	dmalist_readcmd_length_hi	; calculate the new mon_out stuff: appended by the dma write command with the result
+	STA	mon_out + 1
+	; Other bytes of the target is already prepared in the DMA list.
+	; So now, in theory, we must only issue an enhanced mode DMA now!
+	LDA	#.HIBYTE(dmalist_readcmd_specification)
+	STA	$D701	; address high byte of our DMA list
+	LDA	#0
+	STA	$D702	; bank, any write to here automatically clears $D704 too (megabyte slice of address)
+	LDA	#.LOBYTE(dmalist_readcmd_specification)
+	STA	$D705	; in contrast of $D700, it triggers an enhanced mode DMA
+	; Done ;-P
+	JMP	command_loop
+
+
+cmd_dma_write:
+	; Store op LEN, only _ONE_ byte, meaning number of 256 bytes
+	LDA	(mon_in),Z
+	INZ
+	STA	dmalist_writecmd_length_hi
+	; Target address
+	LDA	(mon_in),Z
+	INZ
+	STA	dmalist_writecmd_target
+	LDA	(mon_in),Z
+	INZ
+	STA	dmalist_writecmd_target + 1
+	LDA	(mon_in),Z
+	INZ
+	AND	#$F
+	STA	dmalist_writecmd_target + 2
+	LDA	(mon_in),Z
+	INZ
+	STA	dmalist_writecmd_target_megabyte_enhanced_option
+	; OK. Now we need to calulate the meaning is current "mon_in"
+	; pointer in terms of linear address in the RX buffer.
+	; mon_in is CPU MAP'ed based on RX buffer at CPU address $6800
+	; the linear M65 address for the same is: $FFDE800
+	LDA	mon_in
+	CLC
+	ADC	#5				; we add five, because of the 5 bytes we fetched above
+	STA	mon_in
+	STA	dmalist_writecmd_source		; the low byte is the same, fortunately
+	LDA	mon_in+1
+	ADC	#0				; maybe carry from the previous ADC, you see ...
+	TAX					; save it for later usage
+	ADC	#$80				; $E8-$68 = $80 (there should be no carry from the previous ADC, but we save a CLC here)
+	STA	dmalist_writecmd_source + 1	; we don't need to handle carry, as 2K RX buffer is small enough not to cross a 64K boundary (what DMA wouldn't like either, btw)
+	TXA
+	CLC
+	ADC	dmalist_writecmd_length_hi	; calculate the new mon_in stuff's high byte for the next command_loop
+	STA	mon_in+1
+	; Other bytes of the source is already prepared in the DMA list.
+	; So now, in theory, we must only issue an enhanced mode DMA now!
+	LDA	#.HIBYTE(dmalist_writecmd_specification)
+	STA	$D701	; address high byte of our DMA list
+	LDA	#0
+	STA	$D702	; bank, any write to here automatically clears $D704 too (megabyte slice of address)
+	LDA	#.LOBYTE(dmalist_writecmd_specification)
+	STA	$D705	; in contrast of $D700, it triggers an enhanced mode DMA
+	; Done ;-P
+	JMP	command_loop
+
+
 
 .ENDPROC
+
+
+.DATA
+
+; Source: user specified address
+; Target: TX ethernet buffer @ current mon_out (but that is CPU MAP'ed, cannot used directly!)
+dmalist_readcmd_specification:
+	.BYTE	$0A		; use F018A-style DMA structure
+dmalist_readcmd_source_megabyte_enhanced_option = * + 1
+	.BYTE	$80, $00	; set source megabyte: paramter is overriden by user!!!
+	.BYTE	$81, $FF	; set target meyabyte: it will be the MB of the TX buffer
+	.BYTE	$00		; end of enhanced mode DMA option list
+	; Now the F018A-style DMA stuff
+	.BYTE	$00		; DMA command byte (copy, not chained, etc, all zero bits)
+	.BYTE	$00		; DMA operation length low byte. Always zero, we must copy multiple of 256 bytes only.
+dmalist_readcmd_length_hi:
+	.BYTE	$00		; DMA operation length high byte, overriden by user!!!
+dmalist_readcmd_source:
+	.BYTE   $00, $00, $00	; source, all of these will be overriden by the user!!!
+dmalist_readcmd_target:
+	.BYTE	$00, $00	; target low bytes, overriden by the user (for pointing the right place inside the TX buffer)
+	.BYTE	$0D		; bits [19:16] of source, and other fancy stuff in the high nibl., it's a constant now ($D=TX buffer address part)
+; AND NOW THE TRICK: we *MISS* the module bytes. DMA controller may reads two extra bytes here, but will never use.
+; NEVER USE THIS TRICK (!!) if the DMA list is chained!!!!! [but our one is not]
+
+
+
+
+; Source: RX ethernet buffer @ current mon_in (but that is CPU MAP'ed, cannot used directly!)
+; Target: user specified address
+dmalist_writecmd_specification:
+	.BYTE	$0A		; use F018A-style DMA structure
+	.BYTE	$80, $FF	; set source megabyte: it will be the MB of the RX buffer
+dmalist_writecmd_target_megabyte_enhanced_option = * + 1
+	.BYTE	$81, $00	; set target meyabyte: paramter is overriden by user!!!
+	.BYTE	$00		; end of enhanced mode DMA option list
+	; Now the F018A-style DMA stuff
+	.BYTE	$00		; DMA command byte (copy, not chained, etc, all zero bits)
+	.BYTE	$00		; DMA operation length low byte. Always zero, we must copy multiple of 256 bytes only.
+dmalist_writecmd_length_hi:
+	.BYTE	$00		; DMA operation length high byte, overriden by user!!!
+dmalist_writecmd_source:
+	.BYTE	$00, $00	; source low bytes, overriden by the user (for pointing the right place inside the RX buffer)
+	.BYTE	$0D		; bits [19:16] of source, and other fancy stuff in the high nibl., it's a constant now ($D=RX buffer address part)
+dmalist_writecmd_target:
+	.BYTE	$00, $00, $00	; target, all of these will be overriden by the user!!!
+; AND NOW THE TRICK: we *MISS* the module bytes. DMA controller may reads two extra bytes here, but will never use.
+; NEVER USE THIS TRICK (!!) if the DMA list is chained!!!!! [but our one is not]
 
 
 .ZEROPAGE

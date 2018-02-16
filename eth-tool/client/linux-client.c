@@ -353,13 +353,23 @@ static int msg_add_readmem ( int m65_addr, int size )
 	already_in_progress_assert(1, "msg_add_readmem()");
 	expected_answer_pos = com.ans_size_expected;
 	com.ans_size_expected += size;		// answer should contain these amount of bytes!
-	*com.s_p++ = 1;			// command code: read memory
-	*com.s_p++ = size & 0xFF;		// length low byte
-	*com.s_p++ = size >> 8;		// length hi byte
-	*com.s_p++ = m65_addr & 0xFF;		// 4 byte of M65 address
-	*com.s_p++ = (m65_addr >> 8) & 0xFF;
-	*com.s_p++ = (m65_addr >> 16) & 0xFF;
-	*com.s_p++ = (m65_addr >> 24) & 0x0F;	// only 28 bits on M65
+	if ((size & 0xFF)) {
+		*com.s_p++ = 1;			// command code: read memory
+		*com.s_p++ = size & 0xFF;		// length low byte
+		*com.s_p++ = size >> 8;		// length hi byte
+		*com.s_p++ = m65_addr & 0xFF;		// 4 byte of M65 address
+		*com.s_p++ = (m65_addr >> 8) & 0xFF;
+		*com.s_p++ = (m65_addr >> 16) & 0xFF;
+		*com.s_p++ = (m65_addr >> 24) & 0x0F;	// only 28 bits on M65
+	} else {
+		// Use DMA accelerated read if length if multiple of 256!
+		*com.s_p++ = 6;
+		*com.s_p++ = size >> 8;	// with DMA read cmd, we use only the high byte as length!
+		*com.s_p++ = m65_addr & 0xFF;		// 4 byte of M65 address
+		*com.s_p++ = (m65_addr >> 8) & 0xFF;
+		*com.s_p++ = (m65_addr >> 16) & 0x0F;	// only 4 bits here, 8+8+4=20 bits, in-megbyte address
+		*com.s_p++ = (m65_addr >> 20) & 0xFF;	// and this is the megabyte-slice actually.
+	}
 	return expected_answer_pos;
 }
 
@@ -374,13 +384,23 @@ static void msg_add_writemem ( int m65_addr, int size, unsigned char *buffer )
 {
 	already_in_progress_assert(1, "msg_add_writemem()");
 	// write does not extend the answer size at all!
-	*com.s_p++ = 2;			// command code: write memory
-	*com.s_p++ = size & 0xFF;		// length low byte
-	*com.s_p++ = size >> 8;		// length hi byte
-	*com.s_p++ = m65_addr & 0xFF;		// 4 byte of M65 address
-	*com.s_p++ = (m65_addr >> 8) & 0xFF;
-	*com.s_p++ = (m65_addr >> 16) & 0xFF;
-	*com.s_p++ = (m65_addr >> 24) & 0x0F;	// only 28 bits on M65
+	if ((size & 0xFF)) {
+		*com.s_p++ = 2;			// command code: write memory
+		*com.s_p++ = size & 0xFF;		// length low byte
+		*com.s_p++ = size >> 8;		// length hi byte
+		*com.s_p++ = m65_addr & 0xFF;		// 4 byte of M65 address
+		*com.s_p++ = (m65_addr >> 8) & 0xFF;
+		*com.s_p++ = (m65_addr >> 16) & 0xFF;
+		*com.s_p++ = (m65_addr >> 24) & 0x0F;	// only 28 bits on M65
+	} else {
+		// Use DMA accelerated write if length if multiple of 256!
+		*com.s_p++ = 7;
+		*com.s_p++ = size >> 8;	// with DMA write cmd, we use only the high byte as length!
+		*com.s_p++ = m65_addr & 0xFF;		// 4 byte of M65 address
+		*com.s_p++ = (m65_addr >> 8) & 0xFF;
+		*com.s_p++ = (m65_addr >> 16) & 0x0F;	// only 4 bits here, 8+8+4=20 bits, in-megbyte address
+		*com.s_p++ = (m65_addr >> 20) & 0xFF;	// and this is the megabyte-slice actually.
+	}
 	// Now also add the data as well to be written on the M65 size
 	// dangerous: zero should be currently NOT used!
 	memcpy(com.s_p, buffer, size);
@@ -1236,7 +1256,7 @@ static int push_gfx ( void )
 	int usec = 0;
 	int rounds = 0;
 	int old_timeout = com.retransmit_timeout_usec;
-	com.retransmit_timeout_usec = 1500;     // use a brutal one now, we don't want to wait :-@
+	com.retransmit_timeout_usec = 512;     // use a brutal one now, we don't want to wait :-@
 	do {
 		rounds++;
 		msg_begin();
@@ -1338,7 +1358,8 @@ static int cmd_gfxdemo ( int argc, char **argv )
 		gfxdemo_mand_render(0.001643721971153L, 0.822467633298876L, zoom);
 		if (push_gfx())
 			return -1;
-		zoom = zoom + 0.1;
+		//zoom = zoom + 0.1;
+		zoom = zoom * 1.01L;
 	} while (zoom < 10.0);
 
 	sleep(1);
@@ -1354,6 +1375,16 @@ static int cmd_gfxdemo ( int argc, char **argv )
 }
 
 
+static int cmd_chdir ( int argc , char **argv )
+{
+	if (argc != 1) {
+		fprintf(stderr, "One paramter needed, directory to change to\n");
+		return -1;
+	}
+	return mfat32_chdir(argv[0]);
+}
+
+
 
 static int cmd_help ( int argc, char **argv );
 
@@ -1362,6 +1393,7 @@ static const struct {
 	int (*func)(int,char**);
 	const char *help;
 } cmd_tab[] = {
+	{ "cd",	cmd_chdir, "Change directory on SD-card" },
 	{ "gfxdemo", cmd_gfxdemo, "Well, surprise :) - but you must watch your M65 screen meanwhile" },
 	{ "download", cmd_download, "Download a file from SD-card (FAT and local filenames must be specified)" },
 	{ "dir", cmd_dirtest, "Simple test, trying directory ..." },
