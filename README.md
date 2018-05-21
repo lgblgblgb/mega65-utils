@@ -1,6 +1,6 @@
 # Mega-65 utilities
 
-(C)2017 LGB (Gábor Lénárt) lgblgblgb@gmail.com
+(C)2017,2018 LGB (Gábor Lénárt) lgblgblgb@gmail.com
 See file LICENSE (GNU/GPL v3, or later).
 
 Various Mega-65 related utilities, and software, both of native (running on

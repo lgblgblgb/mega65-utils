@@ -1,0 +1,593 @@
+; This is an ugly source for several reasons:
+; * I was lazy to write a proper ld65 linker file, so it compiles with
+;   cl65 -t none, and using ugly ORG tricks instead of proper memory areas/segments
+; * As this program should run on real C65's several tries is done to be
+;   more "bullet-proof", ie:
+;   * not using 4510 opcodes (it's known some C65 has problems here) other than
+;     what we really need (ie: MAP to access more memory) _even_ if we know,
+;     most 4510 ops shouldn't be a problem even C65 ROM uses many
+;   * we start from C64 mode (so use should first GO64 before load this program),
+;     to ensure no compatibility issues with C65-mode "BASIC stubs" or who knows,
+;     I still trust C64's ROM code more than the unfinished C65 mode stuff, which
+;     can even varies between different C65 units.
+
+.SETCPU	"6502"
+
+.IFDEF	C65_MODE
+	.ORG	$1FFF
+	.WARNING "Compiling for C65 mode"
+.ELSE
+	.ORG	$7FF
+	.WARNING "Compiling for C64 mode"
+	RELOCATED_TO = $2000
+.ENDIF
+
+
+.SCOPE
+	.WORD	* + 2, nextline, 2018
+	.IFDEF	C65_MODE
+		.WORD	$02FE
+		.BYTE	"0 : "
+	.ENDIF
+	.BYTE	$9E, $20
+	.BYTE	.SPRINTF("%d", * + 7)
+	.BYTE	0
+nextline:
+	.WORD	0
+.IFDEF	RELOCATED_TO
+	LDY	#.LOBYTE((RELOCATED_SIZE / 256) + 1)
+	LDX	#$FF
+reloc:
+	LDA	RELOCATE_FROM + RELOCATED_SIZE - 1 - 255,X
+	STA	RELOCATED_TO  + RELOCATED_SIZE - 1 - 255,X
+	DEX
+	CPX	#$FF
+	BNE	reloc
+	DEC	reloc + 2
+	DEC	reloc + 5
+	DEY
+	BNE	reloc
+	.WARNING	"Need relocation."
+.ELSE
+	.WARNING	"No relocation needed."
+.ENDIF
+	JMP	main
+.ENDSCOPE
+
+.IFDEF RELOCATED_TO
+RELOCATE_FROM:
+.ORG RELOCATED_TO
+.ASSERT RELOCATE_FROM < RELOCATED_TO - $100, error, "ASSERT violation: relocation error, see the source for more tips."
+.ENDIF
+
+
+SCREENRAM_BASE		= $0800
+COLOURRAM_BASE		= $8000		; we MAP the colour RAM for ourselves!
+.DEFINE SCREENLINELENGTH	80
+
+__EOS_TOKEN__		= $17
+PRINT_REV_ON		= $16
+PRINT_REV_OFF		= $15
+
+dma_revision		= $E0
+strbasepos		= $F0
+printbasepointer	= $F2
+printcolourbasepointer	= $F4
+printrelpos		= $F6
+
+
+; Really, CA65 seems to have a bug, to freak out in macros without so much degree of (...) constructs :-O
+.DEFINE	PRINT_GOTO_XY(xpos,ypos)	.HIBYTE(((ypos*SCREENLINELENGTH)+xpos)+$1800),.LOBYTE((ypos*SCREENLINELENGTH)+xpos)
+.DEFINE PRINT_COLOUR(col)		col
+
+
+.MACRO	IPRINT	str
+	JSR	print_istring
+	.BYTE	str
+	.BYTE	__EOS_TOKEN__
+.ENDMACRO
+
+
+.IF SCREENLINELENGTH = 40
+SPRITEVECTORSAT	= SCREENRAM_BASE + 1024 - 8
+SCREEN_HIB_MASK	= $03
+.ELSE
+SPRITEVECTORSAT = SCREENRAM_BASE + 2048 - 8
+SCREEN_HIB_MASK	= $07
+.ENDIF
+
+
+main:
+	SEI
+	JSR	setcpuport
+	LDA	#$F8
+	JSR	map
+	JSR	vic3iomode
+	; Turn VIC-III ROM mappings off
+	LDA	$D030
+	AND	#6
+	STA	$D030
+	; Turn H640 mode on
+	LDA	$D031
+	ORA	#$80
+	STA	$D031
+	; Set screen and charset memory address
+	LDA	#32+6
+	STA	$D018
+
+
+	JSR	clrscr
+	JSR	clrcol
+	IPRINT	{ "Commodore 65 ", PRINT_REV_ON, "DMA", PRINT_REV_OFF, " tester (C)2018 LGB. Thanks for your help to run this on a real C65!" }
+	;IPRINT  { "First, please help us to solve a VIC-III mystery. Are the border and background has the same colour now? Are the two rectangles (sprites) has tme same colour?" }
+	;IPRINT	{ "Please remember your answers, and press SPACE to continue with the DMA tests" }
+	IPRINT	{ "MasodikTesztelJUK [0-9 A-F] NOW 9A=", PRINT_GOTO_XY(20,20), "So here" }
+	LDA	#$9A
+	JSR	print_hex_byte
+
+
+	IPRINT	{ PRINT_GOTO_XY(10,0), "DMA revision: " }
+	JSR	detect_dma_revision
+	CLC
+	ADC	#'A'
+	JSR	print_char
+	TYA
+	CLC
+	ADC	#'0'
+	JSR	print_char
+
+	IPRINT	{ PRINT_GOTO_XY(40,10), "DMA reg echo: " }
+	JSR	detect_dma_regarray_echo
+	JSR	print_hex_byte
+
+
+@insane:
+	JMP	@insane
+
+
+	SEI
+	; Some generic VIC-III register magic
+	; Gfx mode set to have common well-known setup from both of C64/C65 mode
+
+
+
+	JSR	map	; it has input param in "A", but we don't care here, only at tests it counts when we want to "scan" or modify the second 64K of RAM area of C65
+.IFDEF C65_MODE
+.ENDIF
+	JSR	clrscr
+	JSR	clrcol
+	LDA	#1
+	STA	$400
+	RTS
+
+; MAP stuff.
+; * it sets unmapped for whole 64K range, expect of block 3 and block 4
+; * block3 is a user-definable "scan" window (see input parameters)  (we need here: $10000 - $6000 = $A000 for the start of the second 64K of C65
+; * block4 is the colour RAM, to avoid 2K colour RAM I/O switch on/off or other possible bugs (so this is at $8000) $17800 mapping offset for $8000 (0x1f800 - 0x8000)
+; Input parameter:
+; A = 8K window @ CPU address $6000 to point to in the second 64K of memory area of C65, high byte only!
+.PROC	map
+	; WARNING: we DONT save Z register ... but we don't even use it too much in this source!
+	STA	ugly
+	PHA
+	TXA
+	PHA
+	TYA
+	PHA
+ugly 	= * + 1
+	LDA	#$00	; the input parameter
+	CLC
+	ADC	#$A0
+	LDX	#$80	; block 3 is mapped (bit 7)
+	BCC	:+
+	INX		; if adding to acu overflowed, this INX will set bit0 of X, thus bit16 of the lower offset!
+:	LDY	#$78	; from $17800, upper offset
+	.BYTE	$A3,$11	; LDZ #0 opcode: $10=BLK4 is mapped, $01 = bit16 of upper offset
+	.BYTE	$5C	; MAP opcode
+	NOP		; also functions as "EOM"
+	; Mapping is over, just to be sure, set CPU "I/O port" registers
+	JSR	setcpuport
+	; return
+	PLA
+	TAY
+	PLA
+	TAX
+	PLA
+	.BYTE	$A3,$00	; just be sure Z is zero, who knows, maybe something depends on it ...
+	RTS
+.ENDPROC
+
+
+.PROC	setcpuport
+	PHA
+	LDA	#7
+	STA	0	; data direction register, all output
+	LDA	#5	; b101, all RAM, but with I/O
+	STA	1
+	PLA
+	RTS
+.ENDPROC
+
+
+.PROC	vic3iomode
+	PHA
+	; Select VIC-III I/O mode
+	LDA	#$A5
+	STA	$D02F
+	LDA	#$96
+	STA	$D02F
+	PLA
+	RTS
+.ENDPROC
+
+
+
+.PROC	clrscr
+	PHA
+	TXA
+	PHA
+	;LDA	#.LOBYTE(SCREENRAM_BASE)
+	;STA	printbasepointer
+	;LDA	#.HIBYTE(SCREENRAM_BASE)
+	;STA	printbasepointer+1
+	LDA	#$20
+	LDX	#0
+	;STX	printrelpos
+	;STX	revmask
+loop:
+	STA	SCREENRAM_BASE + $0000,X
+	STA	SCREENRAM_BASE + $0100,X
+	STA	SCREENRAM_BASE + $0200,X
+	STA	SCREENRAM_BASE + $0300,X
+.IF SCREENLINELENGTH = 80
+	STA	SCREENRAM_BASE + $0400,X
+	STA	SCREENRAM_BASE + $0500,X
+	STA	SCREENRAM_BASE + $0600,X
+	STA	SCREENRAM_BASE + $0700,X
+.ENDIF
+	INX
+	BNE	loop
+	; the first "GOTOXY" "escape sequence" will also initialize
+	; printbasepointer and printrelpos. Also we want to positionate
+	; next non-heade/footer stuff at the end
+	IPRINT	{ PRINT_GOTO_XY(0,0), PRINT_COLOUR(3), "Valami", PRINT_GOTO_XY(0,24), "http://lgb.hu/", PRINT_GOTO_XY(0,2), "" }
+
+	PLA
+	TAX
+	PLA
+	RTS
+.ENDPROC
+
+
+.PROC	clrcol
+	PHA
+	TXA
+	PHA
+	LDX	#0
+	STX	$D020
+	STX	$D021
+	LDA	#1
+	; Set 2K cram size, lock interrupts meanwhile to avoid confusion, if a possible interrupt handler (if enabled) wants access CIA
+	;PHP
+	;SEI
+loop:
+	STA	COLOURRAM_BASE + $0000,X
+	STA	COLOURRAM_BASE + $0100,X
+	STA	COLOURRAM_BASE + $0200,X
+	STA	COLOURRAM_BASE + $0300,X
+.IF SCREENLINELENGTH = 80
+	STA	COLOURRAM_BASE + $0400,X
+	STA	COLOURRAM_BASE + $0500,X
+	STA	COLOURRAM_BASE + $0600,X
+	STA	COLOURRAM_BASE + $0700,X
+.ENDIF
+	INX
+	BNE	loop
+	;PLP
+	PLA
+	TAX
+	PLA
+	RTS
+.ENDPROC
+
+
+
+; Test DMA list to device between F018A and F018B It's not easy to do if we
+; can't rely on the fact that various settings like DST_HOLD etc really works
+; on all chips. So I've decided to choose only based on the CHAINing
+; On F018A a DMA entry is 11 bytes long, on F018B. By setting CHAIN bit, the
+; next DMA entry would be off by one between F018A and F018B.
+; Here we use COPY operation without any fancy stuff, which is hopefully works
+; everywhere as expected. COPY is nice, since code for that is zero, we need
+; that to make test more easy at the maybe offset chained entry if it's F018B.
+
+data_dma_list_revision_check: .SCOPE
+	.BYTE 4			;--- Command byte ---: only CHAIN bit is set, CMD is 0, COPY
+	.WORD 1			;--- DMA oper len ---
+	.WORD $D0		;--- DMA src 0-15 ---
+	.BYTE 0			;--- DMA src up + etc ---
+	.WORD $D1		;--- DMA target 0-15 ---
+	.BYTE 0			;--- DMA target up + etc ---
+	; Now, from here, there is the difference between F018A and F018B because F018 inserted an extra byte!
+	; Surely there are OTHER differences even with the stuff above already, but that's only about the
+	; interpreation of some bits. Here, the most significant difference is in question only! Later tests
+	; for sure will refine the situation, if we can decide between F018A and F018B here and now!
+	;				F018A				F018B
+	.BYTE 0			;	modulo low byte			subcommand byte
+	.BYTE 0			;	modulo high byte		modulo low byte
+	.BYTE 0			;	NEXT dma entry-command		modulo high byte
+	.BYTE 0			;	NEXT dma len low byte		NEXT dma entry-command
+	.BYTE 1			;	NEXT dma len high byte		NEXT dma len low byte
+	.BYTE 0			;	NEXT source low byte		NEXT dma len high byte
+	.BYTE $C0		;	NEXT source hi byte		NEXT source low byte
+	.BYTE 0			;	NEXT source up+etc byte		NEXT source hi byte
+	.BYTE 0			; 	NEXT target low byte		NEXT source up+etc byte
+	.BYTE $C2		;	NEXT target hi byte		NEXT target low byte
+	.BYTE 0			;	MEXT target up+etc byte		NEXT target hi byte
+	.BYTE 0			;	NEXT modulo low byte		NEXT target up+etc byte
+	.BYTE 0			;	NEXT modulo hi byte		NEXT subcommand byte (again +1 offset)
+	.BYTE 0			;	-- not used on F018A --		NEXT modulo low byte
+	.BYTE 0			;	-- not used on F018A --		NEXT modulo hi byte
+.ENDSCOPE
+
+; So the second DMA entry (chained from the first) because of the "offset" given by the
+; first will mean different things on F018A and F018B. Summary of differences:
+;			 	F018A		F018B
+; DMA-len			$0100		$0001
+; source			$C000		$00C0
+; target			$C200		$00C2
+
+.PROC	detect_dma_revision
+	; Just some test data
+	LDX	#0
+	STX	$D702	; clearing DMA list addr bits>15 btw ...
+	STX	$C000	; 0
+	INX
+	STX	$C0	; 1
+	INX
+	STX	$C200	; 2
+	INX
+	STX	$C2	; 3
+	INX
+	STX	$D0	; 4
+	INX
+	STX	$D1	; 5
+	LDY	#0	; wait flag
+	; Fire up DMA and hope for the best :-)
+	LDA	#.HIBYTE(data_dma_list_revision_check)
+	STA	$D701
+	LDA	#.LOBYTE(data_dma_list_revision_check)
+	STA	$D700	; this will trigger the DMA finally
+	; Just an as extra messure, we check, if copy happens actually, and flashing the border while waiting, though DMA *SHOULD STOP* the CPU!!
+not_needed_wait1:
+	LDA	$D1
+	CMP	#4	; after copy, we should have 5 here ... for both of F018A/B, since this is the first entry in the chained list
+	BEQ	not_needed_wait2
+	INC	$D020
+	LDY	#1
+	JMP	not_needed_wait1
+	; Same here, we wait and also check for F018A/F018B hit the copy, otherwise here we flash the background
+not_needed_wait2:
+	LDA	$C200		; after copy, we should have $C000's counter here (0) if it's an F018A
+	BEQ	found_f018a
+	LDA	$C2		; after copy, we should have $C0's counter(1) here, if it's an F018B
+	CMP	#1
+	BEQ	found_f018b
+	INC	$D021
+	TYA
+	ORA	#2
+	TAY
+	JMP	not_needed_wait2
+found_f018a:
+	LDA	$C2
+	CMP	#3
+	BNE	final_check_error
+	LDA	#0
+ret:
+	STA	dma_revision
+	LDX	#0
+	STX	$D020
+	STX	$D021
+	RTS
+found_f018b:
+	LDA	$C200
+	CMP	#2
+	BNE	final_check_error
+	LDA	#1
+	JMP	ret
+final_check_error:
+	LDA	#3
+	STA	$D020
+	STA	$D021
+	JMP	final_check_error
+.ENDPROC
+
+
+; Search for partly decoded DMA area "echoes"
+; This is a simple test and does not even need to know F018A/F018B differences
+
+.PROC	detect_dma_regarray_echo
+	LDX	#0
+	STX	data_dma_list_revision_check	; we reuse the detection stuff's DMA list with non-chaining, so there if no F018A/F018B diff here
+	STX	$D0				; our test data to be copied (zero)
+	LDX	#4
+try_again:
+	LDA	#0
+	STA	$D702
+	LDA	#.HIBYTE(data_dma_list_revision_check)
+	STA	$D701
+	STA	$D1		; non-zero value to $D1, so we can see if changes if there is a copy ...
+	LDA	#.LOBYTE(data_dma_list_revision_check)
+	STA	$D700,X		; this *should* trigger the DMA, if X is zero, or multiple of the repeated "images" of DMA registers!
+	JSR	wait		; again, technically we should not wait here
+	LDA	$D1
+	BNE	no_dma
+	TXA
+	RTS
+no_dma:
+	INX
+	INX
+	INX
+	INX
+	BNE	try_again
+	LDA	#0
+	RTS
+.ENDPROC
+
+
+ascii2videoram:	.SCOPE
+	; ASCII $20-$3F
+	.REPEAT 32, j
+		.BYTE	$20 + j
+	.ENDREPEAT
+	; ASCII $40-$5F
+	.BYTE		$00
+	.REPEAT	26, j
+		.BYTE	$41 + j
+	.ENDREPEAT
+	.BYTE		$1B, $1C, $1D, $1E, $1F
+	; ASCII $60-$7F
+	.REPEAT 32, j
+		.BYTE	j
+	.ENDREPEAT
+.ENDSCOPE
+
+
+.PROC	print_char
+	STA	ugly
+	PHA
+	TYA
+	PHA
+ugly = * + 1
+	LDY	#0
+	LDA	ascii2videoram - $20,Y
+revmask = * + 1
+	ORA	#0
+	LDY	printrelpos
+	STA	(printbasepointer),Y
+colour = * + 1
+	LDA	#0
+	STA	(printcolourbasepointer),Y
+	INY
+	STY	printrelpos
+	PLA
+	TAY
+	PLA
+	RTS
+.ENDPROC
+
+revmask = print_char::revmask
+colour  = print_char::colour
+
+
+.PROC	print_hex_digit
+	PHA
+	AND	#$0F
+	CMP	#$0A
+	BCC	:+
+	ADC	#6
+:	ADC	#'0'
+	JSR	print_char
+	PLA
+	RTS
+.ENDPROC
+
+
+.PROC	print_hex_byte
+	PHA
+	LSR	A
+	LSR	A
+	LSR	A
+	LSR	A
+	JSR	print_hex_digit
+	PLA
+	JMP	print_hex_digit
+.ENDPROC
+
+
+
+.PROC	print_istring
+	; save registers
+	PHA
+	TXA
+	PHA
+	TYA
+	PHA
+	; get return address stuff ...
+	LDY	#1
+	TSX
+	LDA	$104,X
+	STA	strbasepos
+	LDA	$105,X
+	STA	strbasepos+1
+loop:
+	LDA	(strbasepos),Y
+	CMP	#32
+	BCC	control_char
+	JSR	print_char
+continue:
+	INY
+	BNE	loop
+eos:
+	CLC
+	TYA
+	ADC	strbasepos
+	STA	$104,X
+	BCC	:+
+	INC	$105,X
+:	PLA	;	restore registers
+	TAY
+	PLA
+	TAX
+	PLA
+	RTS
+control_char:
+	CMP	#$10
+	BCC	esc_set_colour
+	CMP	#__EOS_TOKEN__
+	BEQ	eos
+	CMP	#PRINT_REV_ON
+	BEQ	esc_rev_on
+	CMP	#PRINT_REV_OFF
+	BEQ	esc_rev_off
+; if no other ctrl char, then use positioning statement:
+	AND	#SCREEN_HIB_MASK
+	CLC
+	ADC	#.HIBYTE(SCREENRAM_BASE)
+	STA	printbasepointer + 1
+	ADC	#.HIBYTE(COLOURRAM_BASE - SCREENRAM_BASE)
+	STA	printcolourbasepointer + 1
+	INY
+	LDA	(strbasepos),Y
+	STA	printbasepointer + 0
+	STA	printcolourbasepointer + 0
+	LDA	#0
+	STA	printrelpos
+	BEQ	continue
+esc_rev_on:
+	LDA	#$80
+	STA	revmask
+	BNE	continue
+esc_rev_off:
+	LDA	#$00
+	STA	revmask
+	BEQ	continue
+esc_set_colour:
+	STA	colour
+	JMP	continue
+.ENDPROC
+
+
+wait:
+	RTS
+
+
+
+
+;.SEGMENT "BSS"
+
+; Must be the LAST in the source!
+.IFDEF RELOCATED_TO
+RELOCATED_SIZE = * - RELOCATED_TO
+.ENDIF
+EMPTY_SPACE:
