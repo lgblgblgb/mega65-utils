@@ -1,3 +1,26 @@
+; ----------------------------------------------------------------------------
+;
+; Commodore 65 tests.
+;
+; Copyright (C)2018 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+;
+; ----------------------------------------------------------------------------
+;
+; This program is free software; you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation; either version 3 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program.  If not, see <http://www.gnu.org/licenses/>.
+;
+; ----------------------------------------------------------------------------
+;
 ; This is an ugly source for several reasons:
 ; * I was lazy to write a proper ld65 linker file, so it compiles with
 ;   cl65 -t none, and using ugly ORG tricks instead of proper memory areas/segments
@@ -12,6 +35,9 @@
 ;     can even varies between different C65 units.
 
 .SETCPU	"6502"
+
+.DEFINE	VERSION	"0.1"
+
 
 .IFDEF	C65_MODE
 	.ORG	$1FFF
@@ -65,9 +91,11 @@ SCREENRAM_BASE		= $0800
 COLOURRAM_BASE		= $8000		; we MAP the colour RAM for ourselves!
 .DEFINE SCREENLINELENGTH	80
 
+; tokens $18-$1F is the gotoxy stuff, high byte
 __EOS_TOKEN__		= $17
 PRINT_REV_ON		= $16
 PRINT_REV_OFF		= $15
+__PRINT_TAB_TOKEN__	= $14
 
 dma_revision		= $E0
 strbasepos		= $F0
@@ -75,10 +103,31 @@ printbasepointer	= $F2
 printcolourbasepointer	= $F4
 printrelpos		= $F6
 
+.SCOPE	COLOURS
+	BLACK		= 0
+	WHITE		= 1
+	RED		= 2
+	CYAN		= 3
+	PURPLE		= 4
+	GREEN		= 5
+	BLUE		= 6
+	YELLOW		= 7
+	ORANGE		= 8
+	BROWN		= 9
+	PINK		= 10
+	DGREY		= 11
+	GREY		= 12
+	LGREEN		= 13
+	LBLUE		= 14
+	LGREY		= 15
+.ENDSCOPE
+
+
 
 ; Really, CA65 seems to have a bug, to freak out in macros without so much degree of (...) constructs :-O
 .DEFINE	PRINT_GOTO_XY(xpos,ypos)	.HIBYTE(((ypos*SCREENLINELENGTH)+xpos)+$1800),.LOBYTE((ypos*SCREENLINELENGTH)+xpos)
 .DEFINE PRINT_COLOUR(col)		col
+.DEFINE PRINT_TAB(val)			__PRINT_TAB_TOKEN__,val
 
 
 .MACRO	IPRINT	str
@@ -90,10 +139,10 @@ printrelpos		= $F6
 
 .IF SCREENLINELENGTH = 40
 SPRITEVECTORSAT	= SCREENRAM_BASE + 1024 - 8
-SCREEN_HIB_MASK	= $03
+.DEFINE SCREEN_HIB_MASK	$03
 .ELSE
 SPRITEVECTORSAT = SCREENRAM_BASE + 2048 - 8
-SCREEN_HIB_MASK	= $07
+.DEFINE	SCREEN_HIB_MASK	$07
 .ENDIF
 
 
@@ -114,19 +163,23 @@ main:
 	; Set screen and charset memory address
 	LDA	#32+6
 	STA	$D018
+	; Some default border/background
+	LDA	#0
+	STA	$D020
+	STA	$D021
 
 
 	JSR	clrscr
-	JSR	clrcol
-	IPRINT	{ "Commodore 65 ", PRINT_REV_ON, "DMA", PRINT_REV_OFF, " tester (C)2018 LGB. Thanks for your help to run this on a real C65!" }
+	;JSR	clrcol
+	;IPRINT	{ "Commodore 65 ", PRINT_REV_ON, "DMA", PRINT_REV_OFF, " tester (C)2018 LGB. Thanks for your help to run this on a real C65!" }
 	;IPRINT  { "First, please help us to solve a VIC-III mystery. Are the border and background has the same colour now? Are the two rectangles (sprites) has tme same colour?" }
 	;IPRINT	{ "Please remember your answers, and press SPACE to continue with the DMA tests" }
-	IPRINT	{ "MasodikTesztelJUK [0-9 A-F] NOW 9A=", PRINT_GOTO_XY(20,20), "So here" }
-	LDA	#$9A
-	JSR	print_hex_byte
+	;IPRINT	{ "MasodikTesztelJUK [0-9 A-F] NOW 9A=", PRINT_GOTO_XY(20,20), "So here" }
+	;LDA	#$9A
+	;JSR	print_hex_byte
 
 
-	IPRINT	{ PRINT_GOTO_XY(10,0), "DMA revision: " }
+	IPRINT	{ PRINT_GOTO_XY(0,2), "DMA revision: ", COLOURS::LGREEN }
 	JSR	detect_dma_revision
 	CLC
 	ADC	#'A'
@@ -135,30 +188,74 @@ main:
 	CLC
 	ADC	#'0'
 	JSR	print_char
+	LDA	$D703
+	JSR	print_hex_byte
 
-	IPRINT	{ PRINT_GOTO_XY(40,10), "DMA reg echo: " }
+
+	IPRINT	{ PRINT_GOTO_XY(40,2), COLOURS::RED, "DMA reg echo: " }
 	JSR	detect_dma_regarray_echo
 	JSR	print_hex_byte
+
+	IPRINT	{ PRINT_GOTO_XY(0,3), "Status reg: " }
+	LDA	$D703
+	JSR	print_hex_byte
+
+
+	IPRINT	{ PRINT_GOTO_XY(0,4), "Testing all DMA commands with all minterms settings:", PRINT_GOTO_XY(0,5), "" }
+
+
+	LDY	#0
+dma_oper_test_outer_loop:
+	TYA
+	PHA
+	LDX	#0
+	STX	$D2
+	STX	$D3
+dma_oper_test_inner_loop:
+	TXA
+	PHA
+	INC	printrelpos
+	LDX	#COLOURS::LGREEN
+	STX	colour
+	JSR	check_operations_with_minterms
+	LDA	$D0
+	CMP	$D2
+	BNE	diff_result
+	LDA	$D1
+	CMP	$D3
+	BNE	diff_result
+	INC	printrelpos
+	LDA	#'-'
+	JSR	print_char
+	JSR	print_char
+	INC	printrelpos
+	JMP	ok
+diff_result:
+	LDA	$D0
+	STA	$D2
+	JSR	print_hex_byte
+	LDX	#COLOURS::YELLOW
+	STX	colour
+	LDA	$D1
+	STA	$D3
+	JSR	print_hex_byte
+ok:
+	PLA
+	TAX
+	INX
+	CPX	#16
+	BNE	dma_oper_test_inner_loop
+	PLA
+	TAY
+	INY
+	CPY	#4
+	BNE	dma_oper_test_outer_loop
 
 
 @insane:
 	JMP	@insane
 
 
-	SEI
-	; Some generic VIC-III register magic
-	; Gfx mode set to have common well-known setup from both of C64/C65 mode
-
-
-
-	JSR	map	; it has input param in "A", but we don't care here, only at tests it counts when we want to "scan" or modify the second 64K of RAM area of C65
-.IFDEF C65_MODE
-.ENDIF
-	JSR	clrscr
-	JSR	clrcol
-	LDA	#1
-	STA	$400
-	RTS
 
 ; MAP stuff.
 ; * it sets unmapped for whole 64K range, expect of block 3 and block 4
@@ -226,32 +323,25 @@ ugly 	= * + 1
 	PHA
 	TXA
 	PHA
-	;LDA	#.LOBYTE(SCREENRAM_BASE)
-	;STA	printbasepointer
-	;LDA	#.HIBYTE(SCREENRAM_BASE)
-	;STA	printbasepointer+1
 	LDA	#$20
 	LDX	#0
-	;STX	printrelpos
-	;STX	revmask
 loop:
-	STA	SCREENRAM_BASE + $0000,X
-	STA	SCREENRAM_BASE + $0100,X
-	STA	SCREENRAM_BASE + $0200,X
-	STA	SCREENRAM_BASE + $0300,X
-.IF SCREENLINELENGTH = 80
-	STA	SCREENRAM_BASE + $0400,X
-	STA	SCREENRAM_BASE + $0500,X
-	STA	SCREENRAM_BASE + $0600,X
-	STA	SCREENRAM_BASE + $0700,X
-.ENDIF
+.REPEAT	SCREEN_HIB_MASK + 1, j
+	STA	SCREENRAM_BASE + (j * 256),X
+.ENDREPEAT
 	INX
 	BNE	loop
 	; the first "GOTOXY" "escape sequence" will also initialize
 	; printbasepointer and printrelpos. Also we want to positionate
 	; next non-heade/footer stuff at the end
-	IPRINT	{ PRINT_GOTO_XY(0,0), PRINT_COLOUR(3), "Valami", PRINT_GOTO_XY(0,24), "http://lgb.hu/", PRINT_GOTO_XY(0,2), "" }
-
+	IPRINT	{ PRINT_GOTO_XY(0,0), COLOURS::LBLUE, PRINT_REV_ON, " Commodore 65 tester v", VERSION, ". Thanks for your help to try this on a real C65. ", PRINT_GOTO_XY(0,24), " (C)2018 Gabor Lenart (LGB) http://lgb.hu/ ", PRINT_GOTO_XY(0,2), PRINT_REV_OFF, COLOURS::WHITE, "" }
+	; Just some "garbage" we can use as sprites ...
+	; Initialize the sprite pointers with this madness
+	LDA	#.LOBYTE(ascii2videoram / 64)
+	LDX	#7
+:	STA	SPRITEVECTORSAT,X
+	DEX
+	BPL	:-
 	PLA
 	TAX
 	PLA
@@ -259,31 +349,25 @@ loop:
 .ENDPROC
 
 
-.PROC	clrcol
+.PROC	colramswap
 	PHA
 	TXA
 	PHA
+	TYA
+	PHA
 	LDX	#0
-	STX	$D020
-	STX	$D021
-	LDA	#1
-	; Set 2K cram size, lock interrupts meanwhile to avoid confusion, if a possible interrupt handler (if enabled) wants access CIA
-	;PHP
-	;SEI
 loop:
-	STA	COLOURRAM_BASE + $0000,X
-	STA	COLOURRAM_BASE + $0100,X
-	STA	COLOURRAM_BASE + $0200,X
-	STA	COLOURRAM_BASE + $0300,X
-.IF SCREENLINELENGTH = 80
-	STA	COLOURRAM_BASE + $0400,X
-	STA	COLOURRAM_BASE + $0500,X
-	STA	COLOURRAM_BASE + $0600,X
-	STA	COLOURRAM_BASE + $0700,X
-.ENDIF
+.REPEAT	SCREEN_HIB_MASK + 1, j
+	LDA	COLOURRAM_BASE + (j * 256),X
+	LDY	COLOURRAM_SAVE + (j * 256),X
+	STA	COLOURRAM_SAVE + (j * 256),X
+	TYA
+	STA	COLOURRAM_BASE + (j * 256),X
+.ENDREPEAT
 	INX
 	BNE	loop
-	;PLP
+	PLA
+	TAY
 	PLA
 	TAX
 	PLA
@@ -405,7 +489,7 @@ final_check_error:
 
 ; Search for partly decoded DMA area "echoes"
 ; This is a simple test and does not even need to know F018A/F018B differences
-
+; This test reuses the data_dma_list_revision_check list, with modification
 .PROC	detect_dma_regarray_echo
 	LDX	#0
 	STX	data_dma_list_revision_check	; we reuse the detection stuff's DMA list with non-chaining, so there if no F018A/F018B diff here
@@ -433,6 +517,40 @@ no_dma:
 	LDA	#0
 	RTS
 .ENDPROC
+
+; This is a simple test and does not even need to know F018A/F018B differences
+; This test reuses the data_dma_list_revision_check list, with modification
+; Input: A = minterm (4 bits), Y=command, only low 2 bits, others must be zero!
+.PROC	check_operations_with_minterms
+	STY	ugly
+	ASL	A
+	ASL	A
+	ASL	A
+	ASL	A
+	LDX	dma_revision
+	BNE	f018b
+	; Test with F018A
+ugly = * + 1
+	ORA	#0
+	BNE	doit	; always jumps
+f018b:
+	STA	data_dma_list_revision_check + 9
+	TYA
+doit:
+	STA	data_dma_list_revision_check
+	LDA	#$3A
+	STA	$D0
+	LDA	#$5C
+	STA	$D1
+	LDA	#0
+	STA	$D702
+	LDA	#.HIBYTE(data_dma_list_revision_check)
+	STA	$D701
+	LDA	#.LOBYTE(data_dma_list_revision_check)
+	STA	$D700
+	JMP	wait
+.ENDPROC
+
 
 
 ascii2videoram:	.SCOPE
@@ -469,6 +587,17 @@ colour = * + 1
 	LDA	#0
 	STA	(printcolourbasepointer),Y
 	INY
+	BPL	nocorr	; we don't use BNE here, as the caller may increment printrelpos as well to skip a position, missing the transit then ...
+	TYA
+	LDY	#0
+	CLC
+	ADC	printbasepointer
+	STA	printbasepointer
+	STA	printcolourbasepointer
+	BCC	nocorr
+	INC	printbasepointer+1
+	INC	printcolourbasepointer+1
+nocorr:
 	STY	printrelpos
 	PLA
 	TAY
@@ -550,6 +679,8 @@ control_char:
 	BEQ	esc_rev_on
 	CMP	#PRINT_REV_OFF
 	BEQ	esc_rev_off
+	CMP	#__PRINT_TAB_TOKEN__
+	BEQ	esc_tab
 ; if no other ctrl char, then use positioning statement:
 	AND	#SCREEN_HIB_MASK
 	CLC
@@ -575,6 +706,19 @@ esc_rev_off:
 esc_set_colour:
 	STA	colour
 	JMP	continue
+esc_tab:
+	INY
+	LDA	(strbasepos),Y
+	CLC
+	ADC	printbasepointer
+	STA	printbasepointer
+	STA	printcolourbasepointer
+	LDA	#0
+	STA	printrelpos
+	BCC	continue
+	INC	printbasepointer+1
+	INC	printcolourbasepointer+1
+	JMP	continue
 .ENDPROC
 
 
@@ -585,6 +729,8 @@ wait:
 
 
 ;.SEGMENT "BSS"
+
+COLOURRAM_SAVE = EMPTY_SPACE
 
 ; Must be the LAST in the source!
 .IFDEF RELOCATED_TO

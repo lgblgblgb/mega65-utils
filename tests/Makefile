@@ -3,6 +3,8 @@ DISK_IMAGE	= c65tests.d81
 DISK_NAME	= "lgb-test,00"
 CL65		= cl65
 C1541		= c1541
+BITSTREAM	= ../../mega65-core/bin/nexys4ddr.bit
+MONITORLOAD	= ../../mega65-core/src/tools/monitor_load
 
 all: $(DISK_IMAGE)
 
@@ -27,4 +29,10 @@ publish: $(DISK_IMAGE) $(TEST_PROGRAMS)
 clean:
 	rm -f *.o $(TEST_PROGRAMS) $(DISK_IMAGE)
 
-.PHONY: all clean publish
+board64: dmatest64.prg
+	$(MONITORLOAD) -b $(BITSTREAM) -r -4 $<
+
+board65: dmatest65.prg
+	$(MONITORLOAD) -b $(BITSTREAM) -r $<
+
+.PHONY: all clean publish board64 board65

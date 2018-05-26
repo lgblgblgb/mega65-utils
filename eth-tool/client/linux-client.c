@@ -47,6 +47,8 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include "minifat32.h"
 #include "gfxdemo.h"
 
+#define USE_DMA
+
 
 #define MAX_MTU_INITIAL 1472
 #define RETRANSMIT_TIMEOUT_USEC	500000
@@ -353,7 +355,9 @@ static int msg_add_readmem ( int m65_addr, int size )
 	already_in_progress_assert(1, "msg_add_readmem()");
 	expected_answer_pos = com.ans_size_expected;
 	com.ans_size_expected += size;		// answer should contain these amount of bytes!
+#ifdef USE_DMA
 	if ((size & 0xFF)) {
+#endif
 		*com.s_p++ = 1;			// command code: read memory
 		*com.s_p++ = size & 0xFF;		// length low byte
 		*com.s_p++ = size >> 8;		// length hi byte
@@ -361,6 +365,7 @@ static int msg_add_readmem ( int m65_addr, int size )
 		*com.s_p++ = (m65_addr >> 8) & 0xFF;
 		*com.s_p++ = (m65_addr >> 16) & 0xFF;
 		*com.s_p++ = (m65_addr >> 24) & 0x0F;	// only 28 bits on M65
+#ifdef USE_DMA
 	} else {
 		// Use DMA accelerated read if length if multiple of 256!
 		*com.s_p++ = 6;
@@ -370,6 +375,7 @@ static int msg_add_readmem ( int m65_addr, int size )
 		*com.s_p++ = (m65_addr >> 16) & 0x0F;	// only 4 bits here, 8+8+4=20 bits, in-megbyte address
 		*com.s_p++ = (m65_addr >> 20) & 0xFF;	// and this is the megabyte-slice actually.
 	}
+#endif
 	return expected_answer_pos;
 }
 
@@ -384,7 +390,9 @@ static void msg_add_writemem ( int m65_addr, int size, unsigned char *buffer )
 {
 	already_in_progress_assert(1, "msg_add_writemem()");
 	// write does not extend the answer size at all!
+#ifdef USE_DMA
 	if ((size & 0xFF)) {
+#endif
 		*com.s_p++ = 2;			// command code: write memory
 		*com.s_p++ = size & 0xFF;		// length low byte
 		*com.s_p++ = size >> 8;		// length hi byte
@@ -392,6 +400,7 @@ static void msg_add_writemem ( int m65_addr, int size, unsigned char *buffer )
 		*com.s_p++ = (m65_addr >> 8) & 0xFF;
 		*com.s_p++ = (m65_addr >> 16) & 0xFF;
 		*com.s_p++ = (m65_addr >> 24) & 0x0F;	// only 28 bits on M65
+#ifdef USE_DMA
 	} else {
 		// Use DMA accelerated write if length if multiple of 256!
 		*com.s_p++ = 7;
@@ -401,6 +410,7 @@ static void msg_add_writemem ( int m65_addr, int size, unsigned char *buffer )
 		*com.s_p++ = (m65_addr >> 16) & 0x0F;	// only 4 bits here, 8+8+4=20 bits, in-megbyte address
 		*com.s_p++ = (m65_addr >> 20) & 0xFF;	// and this is the megabyte-slice actually.
 	}
+#endif
 	// Now also add the data as well to be written on the M65 size
 	// dangerous: zero should be currently NOT used!
 	memcpy(com.s_p, buffer, size);
@@ -1328,6 +1338,7 @@ static int cmd_gfxdemo ( int argc, char **argv )
 	GS $D058 VIC-IV characters per logical text row (LSB)
 	GS $D059 VIC-IV characters per logical text row (MSB)
 	C65 $D030.2 Use PALETTE ROM or RAM entries for colours 0 - 15
+	C65 $D031.5 VIC-III Enable extended attributes and 8 bit colour entries
 	GS $D060 VIC-IV screen RAM precise base address (bits 0 - 7)
 	GS $D061 VIC-IV screen RAM precise base address (bits 15 - 8)
 	GS $D062 VIC-IV screen RAM precise base address (bits 23 - 16)
@@ -1339,13 +1350,14 @@ static int cmd_gfxdemo ( int argc, char **argv )
 	msg_add_writebyte(M65_IO_ADDR(0xD058), 80);
 	msg_add_writebyte(M65_IO_ADDR(0xD059), 0);
 	addr = msg_add_readmem(M65_IO_ADDR(0xD054), 1);
-	msg_add_readmem(M65_IO_ADDR(0xD030), 1);	// do *NOT* move this line from the previous with "addr =" !!!!
+	msg_add_readmem(M65_IO_ADDR(0xD030), 2);	// do *NOT* move this line from the previous with "addr =" !!!!
 	if (msg_commit())
 		return -1;
 
 	msg_begin();
 	msg_add_writebyte(M65_IO_ADDR(0xD054), com.r_buf[addr] | 7);
 	msg_add_writebyte(M65_IO_ADDR(0xD030), com.r_buf[addr + 1] & (~4));
+	msg_add_writebyte(M65_IO_ADDR(0xD031), com.r_buf[addr + 2] | 32);
 	if (msg_commit())
 		return -1;
 
