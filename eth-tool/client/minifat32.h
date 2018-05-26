@@ -46,6 +46,7 @@ extern int mfat32_mount (
 extern int mfat32_dir_get_next_entry ( struct mfat32_dir_entry *entry, int first );
 extern int mfat32_dir_find_file ( const char *filename, struct mfat32_dir_entry *entry );
 extern int mfat32_download_file ( const char *fat_filename, const char *host_filename );
+extern int mfat32_reupload_file ( const char *fat_filename, const char *host_filename );
 extern int mfat32_chdir ( const char *dirname );
 extern void mfat32_chroot ( void );
 

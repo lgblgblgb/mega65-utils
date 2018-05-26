@@ -48,7 +48,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include "gfxdemo.h"
 
 #define USE_DMA
-
+//#define SUPPORT_UPLOAD
 
 #define MAX_MTU_INITIAL 1472
 #define RETRANSMIT_TIMEOUT_USEC	500000
@@ -1259,6 +1259,33 @@ static int cmd_download ( int argc, char **argv )
 }
 
 
+#ifdef SUPPORT_UPLOAD
+static int cmd_reupload ( int argc, char **argv )
+{
+	struct timeval tv1, tv2;
+	int ret;
+	if (use_some_partition())
+		return 1;
+	if (argc != 2) {
+		fprintf(stderr, "This command requires two parameters: file name on the SD-card, then target file name on your computer.\n");
+		return 1;
+	}
+	gettimeofday(&tv1, NULL);
+	ret = mfat32_reupload_file (argv[0], argv[1]);
+	gettimeofday(&tv2, NULL);
+	if (ret < 0) {
+		fprintf(stderr, "Re-uploading (replacing) failed :(\n");
+		return 1;
+	} else {
+		double st = (double)(tv2.tv_usec - tv1.tv_usec) / 1000000.0 + (double)(tv2.tv_sec - tv1.tv_sec);
+		st = st > 0.0 ? ret / st / 1024.0 : 0;
+		printf("File re-uploaded (replaced), %d bytes, avg xfer speed ~ %f Kbytes/sec.\n", ret, st);
+		return 0;
+	}
+}
+#endif
+
+
 static int push_gfx ( void )
 {
 	int addr = 0x6800;
@@ -1410,6 +1437,9 @@ static const struct {
 	{ "download", cmd_download, "Download a file from SD-card (FAT and local filenames must be specified)" },
 	{ "dir", cmd_dirtest, "Simple test, trying directory ..." },
 	{ "test", cmd_test, "Simple test to put clock on M65 screen, and read first line of M65 screen back" },
+#ifdef SUPPORT_UPLOAD
+	{ "reupload", cmd_reupload, "Re-upload file to SD-card, ie, an existing, matching length file (FAT and local filenames must be given) is replaced" },
+#endif
 	{ "sdpart", cmd_sdpart, "Parition table on the M65's SD-card" },
 	{ "sdtest", cmd_sdtest, "SD-Card read-test for two sectors, and performance test on multiple reading" },
 	{ "sdsize", cmd_sdsizetest, "Detect SD-card size from client (can give cached result!)" },

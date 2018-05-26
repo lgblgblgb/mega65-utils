@@ -190,7 +190,7 @@ static void open_object ( int cluster )
 // 0 = OK, buffer is valid
 // 1 = end-of-chain situation, buffer is NOT valid
 // negative = I/O error on sector reading etc
-static int read_next_sector ( void *buffer )
+static int prepare_io_next_sector ( void )
 {
 	if (!fs.current_cluster)
 		return 1;	// end of chain situation already.
@@ -211,7 +211,28 @@ static int read_next_sector ( void *buffer )
 		fprintf(stderr, "FAT32: invalid cluster (%d) for read_next_sector() ...\n", fs.current_cluster);
 		return -1;
 	}
-	return fs.read_sector((fs.current_cluster - 2) * fs.cluster_size + fs.fs_start + fs.in_cluster_index, buffer);
+	return 0;
+	//return fs.read_sector((fs.current_cluster - 2) * fs.cluster_size + fs.fs_start + fs.in_cluster_index, buffer);
+}
+
+
+static int read_next_sector ( void *buffer )
+{
+	int ret = prepare_io_next_sector();
+	if (ret)
+		return ret;
+	else
+		return fs.read_sector((fs.current_cluster - 2) * fs.cluster_size + fs.fs_start + fs.in_cluster_index, buffer);
+}
+
+
+static int write_next_sector ( void *buffer )
+{
+	int ret = prepare_io_next_sector();
+	if (ret)
+		return ret;
+	else
+		return fs.write_sector((fs.current_cluster - 2) * fs.cluster_size + fs.fs_start + fs.in_cluster_index, buffer);
 }
 
 
@@ -350,6 +371,53 @@ int mfat32_download_file ( const char *fat_filename, const char *host_filename )
 			return -1;
 		}
 		entry.size -= piece_size;
+	}
+	fclose(fp);
+	return original_size;
+}
+
+
+int mfat32_reupload_file ( const char *fat_filename, const char *host_filename )
+{
+	FILE *fp;
+	struct mfat32_dir_entry entry;
+	int original_size = -1;
+	if (mfat32_dir_find_file(fat_filename, &entry)) {
+		fprintf(stderr, "Target file (@SD) cannot be found\n");
+		return -1;
+	}
+	if ((entry.type & MFAT32_DIR)) {
+		fprintf(stderr, "Directory cannot be replaced with file, only files\n");
+		return -1;
+	}
+	open_object(entry.cluster);
+	printf("Re-uploading (replacing) %d bytes of data to SD-card file %s from local file %s ...\n", entry.size, entry.full_name, host_filename);
+	fp = fopen(host_filename, "rb");
+	if (!fp) {
+		perror("Cannot open local file");
+		return -1;
+	}
+	original_size = entry.size;
+	while (entry.size > 0) {
+		unsigned char buffer[512];
+		int piece_size = (entry.size >= 512 ? 512 : entry.size);
+		if (fread(buffer, piece_size, 1, fp) != 1) {
+			perror("Read error at the local side (maybe size mismatch?). PARTLY replaced file!");
+			fclose(fp);
+			return -1;
+		}
+		int ret = write_next_sector(buffer);
+		if (ret) {
+			fprintf(stderr, "FAT32: shorter file in FAT than by its directory entry size, or I/O error [%d]. Warning, PARTLY replaced file.\n", ret);
+			fclose(fp);
+			return -1;
+		}
+		entry.size -= piece_size;
+	}
+	if (!feof(fp)) {
+		fprintf(stderr, "FAT32: re-uploaded file is larger than the one you want to replace. PARTLY written result!\n");
+		fclose(fp);
+		return -1;
 	}
 	fclose(fp);
 	return original_size;
