@@ -30,10 +30,12 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include <limits.h>
 #include <unistd.h>
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
-#include <netdb.h> 
+#include <netdb.h>
+#endif
 #include <errno.h>
 #include <time.h>
 #include <sys/time.h>
@@ -46,6 +48,10 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #endif
 #include "minifat32.h"
 #include "gfxdemo.h"
+
+#ifdef _WIN32
+#include "windows-hacks.c"
+#endif
 
 #define USE_DMA
 #define SUPPORT_UPLOAD
@@ -237,6 +243,7 @@ static int m65_send ( void *buffer, int len )
 		if (ret == -1) {
 			if (errno == EINTR)
 				continue;
+#ifndef _WIN32
 			if (errno == EMSGSIZE) {
 				int mtu_old = com.mtu_size;
 				// query MTU after an EMSGSIZE error
@@ -250,6 +257,7 @@ static int m65_send ( void *buffer, int len )
 				printf("SEND: note: MTU(-header_overhead=-%d) is now %d bytes (was: %d)\n", com.header_overhead, com.mtu_size, mtu_old);
 				return -1;
 			}
+#endif
 			perror("SEND: sendto() failed");
 			return -1;
 		}
@@ -317,12 +325,14 @@ static int m65_con_init ( const char *hostname, int port )
 	// No idea how it works on other OS'es ...
 	// Note, it can cause to have lost sents at the beginning at least.
 	// We exactly want this, only sending packets are not / cannot be fragmented.
+#ifndef _WIN32
 	val = IP_PMTUDISC_DO;
 	if (setsockopt(com.sock, IPPROTO_IP, IP_MTU_DISCOVER, &val, sizeof(val)) == -1) {
 		perror("setsockopt(sock, IPPROTO_IP, IP_MTU_DISCOVER)");
 		close(com.sock);
 		return -1;
 	}
+#endif
 	return 0;
 }
 
@@ -1646,6 +1656,12 @@ static int m65_shell ( const char *hostname, int port )
 int main ( int argc, char **argv )
 {
 	int port;
+#ifdef _WIN32
+	if (windows_init()) {
+		fprintf(stderr, "Windows specific initialization process failed.\n");
+		return 1;
+	}
+#endif
 	if (argc > 1 && !strcmp(argv[1], "-h"))
 		return m65_cmd_executor(1, argv + 1);
 	if (argc < 3) {
