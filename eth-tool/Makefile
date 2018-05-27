@@ -3,11 +3,7 @@ IPANDMSKTAP	= 10.10.10.1/24
 IPM65TAP	= 10.10.10.65
 IPM65LAN	= 192.168.0.65
 
-#M65_BITSTREAM	= /home/lgb/prog_here/mega65-core/bin/nexys4ddr.bit.NEWEST-BEFORE
-#M65_BITSTREAM	= ../../mega65-core/bin/nexys4ddr.bit.NEWEST-BEFORE
-#M65_BITSTREAM	= ../../mega65-core/bin/nexys4ddr.bit
-#M65_BITSTREAM	= ../../mega65-core/bin/nexys4ddr-on-vega-good-old.bit
-M65_BITSTREAM	= ../../mega65-core/bin/nexys4ddr-on-vega.bit
+M65_BITSTREAM	= ../../mega65-core/bin/nexys4ddr.bit
 #M65_MON_LOADER	= /usr/local/bin/mega65-monitor_load
 M65_MON_LOADER	= ../../mega65-core/src/tools/monitor_load
 

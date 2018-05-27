@@ -48,7 +48,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include "gfxdemo.h"
 
 #define USE_DMA
-//#define SUPPORT_UPLOAD
+#define SUPPORT_UPLOAD
 
 #define MAX_MTU_INITIAL 1472
 #define RETRANSMIT_TIMEOUT_USEC	500000
@@ -688,7 +688,7 @@ static int sd_write_sector ( unsigned int sector, unsigned char *data )
 	// --- write I/O area with sector number
 	msg_add_writemem(M65_IO_ADDR(0xD681), 4, buffer);
 	// --- fill sector buffer with out data
-	hex_dump(data, 512, "To be written ...", 0);
+	//hex_dump(data, 512, "To be written ...", 0);
 	msg_add_writemem(M65_SD_BUFFER_FLATADDR, 512, data);
 	// --- give our write command
 	sd_status_index0 = msg_add_waitsd();
@@ -707,14 +707,18 @@ static int sd_write_sector ( unsigned int sector, unsigned char *data )
 	if (msg_commit())
 		return -1;
 	// Phew. OK. Cool down, and let's examine the results more closely.
-	hex_dump(com.r_buf + sd_data_index, 512, "Re-read stuff", 0);
-	printf("SD status before write=$%02X, after write=$%02X, after read=$%02X, data_comparsion = %s\n",
-		com.r_buf[sd_status_index0],
-		com.r_buf[sd_status_index1],
-		com.r_buf[sd_status_index2],
-		!memcmp(data, com.r_buf + sd_data_index, 512) ? "matches" : "**MISMATCH**"
-	);
-	//com.sdstatus = com.r_buf[sd_status_index];
+	if (memcmp(data, com.r_buf + sd_data_index, 512)) {
+		hex_dump(data, 512, "Original data to be written ...", 0);
+		hex_dump(com.r_buf + sd_data_index, 512, "Re-read stuff", 0);
+		printf("SD status before write=$%02X, after write=$%02X, after read=$%02X, data_comparsion = %s\n",
+			com.r_buf[sd_status_index0],
+			com.r_buf[sd_status_index1],
+			com.r_buf[sd_status_index2],
+			!memcmp(data, com.r_buf + sd_data_index, 512) ? "matches" : "**MISMATCH**"
+		);
+		//com.sdstatus = com.r_buf[sd_status_index];
+		return 1;
+	}
 	return 0;
 }
 
@@ -1187,9 +1191,13 @@ static int cmd_sdwrtest ( int argc, char **argv )
 	for (i = 0; i < sizeof(buffer); i++)
 		buffer[i] = i ^ 0xFF;
 	i = sd_write_sector(1, buffer);
-	if (i)
-		printf("ERROR: sd_write_sector funec returned with %d\n", i);
-	return 0;
+	if (i) {
+		printf("ERROR: sd_write_sector function returned with %d\n", i);
+		return -1;
+	} else {
+		printf("Nice, test seems to be OK :-)\n");
+		return 0;
+	}
 }
 
 
@@ -1267,7 +1275,7 @@ static int cmd_reupload ( int argc, char **argv )
 	if (use_some_partition())
 		return 1;
 	if (argc != 2) {
-		fprintf(stderr, "This command requires two parameters: file name on the SD-card, then target file name on your computer.\n");
+		fprintf(stderr, "This command requires two parameters: file name on the SD-card, then source file name on your computer.\n");
 		return 1;
 	}
 	gettimeofday(&tv1, NULL);

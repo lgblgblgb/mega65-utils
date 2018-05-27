@@ -382,6 +382,7 @@ int mfat32_reupload_file ( const char *fat_filename, const char *host_filename )
 	FILE *fp;
 	struct mfat32_dir_entry entry;
 	int original_size = -1;
+	unsigned char buffer[512];
 	if (mfat32_dir_find_file(fat_filename, &entry)) {
 		fprintf(stderr, "Target file (@SD) cannot be found\n");
 		return -1;
@@ -399,7 +400,6 @@ int mfat32_reupload_file ( const char *fat_filename, const char *host_filename )
 	}
 	original_size = entry.size;
 	while (entry.size > 0) {
-		unsigned char buffer[512];
 		int piece_size = (entry.size >= 512 ? 512 : entry.size);
 		if (fread(buffer, piece_size, 1, fp) != 1) {
 			perror("Read error at the local side (maybe size mismatch?). PARTLY replaced file!");
@@ -414,6 +414,7 @@ int mfat32_reupload_file ( const char *fat_filename, const char *host_filename )
 		}
 		entry.size -= piece_size;
 	}
+	printf("Check out one more bytes (should be zero result): %d\n", (int)fread(buffer, 1, 1, fp));
 	if (!feof(fp)) {
 		fprintf(stderr, "FAT32: re-uploaded file is larger than the one you want to replace. PARTLY written result!\n");
 		fclose(fp);
