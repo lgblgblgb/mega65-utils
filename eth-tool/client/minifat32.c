@@ -43,7 +43,7 @@ static struct {
 	int dir_pointer;		// offset pointer in dir_cache for directory functions
 	int root_directory;		// cluster number of root directory, usually this is 2.
 	int current_directory;		// cluster of current directory
-	int (*write_sector)(unsigned int, unsigned char*);
+	int (*write_sector)(unsigned int, const unsigned char*);
 	int (*read_sector)(unsigned int, unsigned char*);
 } fs = {
 	.valid = 0,
@@ -103,7 +103,7 @@ static const unsigned char fat32_id[] = {'F','A','T','3','2',' ',' ',' '};
 
 int mfat32_mount ( 
 	int (*reader_callback)(unsigned int, unsigned char*),
-	int (*writer_callback)(unsigned int, unsigned char*),
+	int (*writer_callback)(unsigned int, const unsigned char*),
 	unsigned int set_starting_sector,
 	unsigned int set_partition_size
 ) {

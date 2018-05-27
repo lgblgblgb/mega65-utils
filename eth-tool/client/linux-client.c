@@ -93,7 +93,7 @@ static struct {
 // prototypes, since we want these to be defined later, quite messed up source ;-P
 // TODO: split up, structure the M65-client source in the future ...
 static int sd_read_sector  ( unsigned int sector );
-static int sd_write_sector ( unsigned int sector, unsigned char *data );
+static int sd_write_sector ( unsigned int sector, const unsigned char *data );
 
 static int nbd_debug;
 
@@ -138,8 +138,39 @@ static int nbd_op_write(const void *buf, u_int32_t len, u_int64_t offset, void *
 {
 	if (*(int *)userdata)
 		fprintf(stderr, "W - %lu, %u\n", offset, len);
-	return htonl(EPERM);	// writing is not yet supported ...
+	//return htonl(EPERM);	// writing is not yet supported ...
 	//return -1;	// writing is not yet supported ...
+	// WARNING IT'S MAYBE NOT WORKS (DENYING UNALIGNED ACCESS)
+	// Also - in my opinion - it shouldn't happen!!! Well, hopefully ...
+	if ((len & 511)) {
+		fprintf(stderr, "NBD: ERROR: Length is not multiple of 512\n");
+		return htonl(EINVAL);
+	}
+	if ((offset & 511UL)) {
+		fprintf(stderr, "NBD: ERROR: Offset is not 512-byte aligned\n");
+		return htonl(EINVAL);
+	}
+	// For real, we handle only sector level offset and length.
+	// So mangle our input to reflect starting sector and number of sectors as offset
+	// even if the variable names are mis-leading from this point already
+	len >>= 9;
+	offset >>= 9;
+	while (len--) {
+		int ret;
+		if (offset >= com.sdsize) {
+			fprintf(stderr, "NBD: trying to write beyond the end of device.\n");
+			return htonl(EFBIG);
+		}
+		// TODO: in case of multiple sectors, we should group by two, in one request/answer, to speed things up maybe two-fold
+		// more than two is not possible wouldn't fit into the MTU of Ethernet already (even two can be problem if this is done
+		// through some 'remote' connection supporting only smaller MTU size for path MTU).
+		ret = sd_write_sector(offset++, buf);
+		if (ret)	// TODO: if ret == -2, give specific error on access beyond end of the device! and remove the 'if' above since that redundant to check here as well.
+			return htonl(EIO);
+		//memcpy(buf, com.sector, 512);
+		buf += 512;
+	}
+	return 0;
 }
 
 static void nbd_op_disc(void *userdata)
@@ -386,7 +417,7 @@ static int msg_add_waitsd ( void )
 	return (com.ans_size_expected++);	// but extends the answer with one byte
 }
 
-static void msg_add_writemem ( int m65_addr, int size, unsigned char *buffer )
+static void msg_add_writemem ( int m65_addr, int size, const unsigned char *buffer )
 {
 	already_in_progress_assert(1, "msg_add_writemem()");
 	// write does not extend the answer size at all!
@@ -527,25 +558,48 @@ rerecv:
 
 static int sd_reset ( void )
 {
-	unsigned char byteval;
-	int stindex1, stindex2, stindex3;
+//	unsigned char byteval;
+	int stindex1, stindex2; // , stindex3;
 	printf("Resetting SD ...\n");
-	msg_begin();
 	// Send SD command 0: reset
-	byteval = 0x00;
-	msg_add_writemem(M65_IO_ADDR(0xD680), 1, &byteval);
+	msg_begin();
+	msg_add_writebyte(M65_IO_ADDR(0xD680), 0x00);
+	if (msg_commit()) {
+		fprintf(stderr, "Error in communication while sending start-reset SD command ...\n");
+		return -1;
+	}
+	usleep(50000);
+	// Send SD command 1: end-reset
+	msg_begin();
+	msg_add_writebyte(M65_IO_ADDR(0xD680), 0x01);
+	if (msg_commit()) {
+		fprintf(stderr, "Error in communication while sending end-reset SD command ...\n");
+		return -1;
+	}
+	usleep(50000);
+	// Some ugly magic
+	msg_begin();
+	stindex1 = msg_add_waitsd();
+	msg_add_writebyte(M65_IO_ADDR(0xD680), com.sdhc ? 0x41 : 0x40);
+	stindex2 = msg_add_waitsd();
+	if (msg_commit()) {
+		fprintf(stderr, "Error in communnication while sending SDHC flag set/reset command after end-reset ...\n");
+		return -1;
+	}
+#if 0
+
 	// Wait for being ready, read status
 	stindex1 = msg_add_waitsd();
 	// Send SD command 1: end-reset
-	byteval = 0x01;
-	msg_add_writemem(M65_IO_ADDR(0xD680), 1, &byteval);
+	//byteval = 0x01;
+	msg_add_writebyte(M65_IO_ADDR(0xD680), 0x01);
 	// Wait for being ready, read status
 	stindex2 = msg_add_waitsd();
 	// Just to be sure, we issue SDHC setting in the case if RESET would mess it up ...
 	// TODO: is this really needed, or is it safe to ignore?
 	// NOTE: mega65-fdisk source says, write may not work without this, even when SDHC bit not changed. So we leave this here!
-	byteval = com.sdhc ? 0x41 : 0x40;	// SDHC mode on/off based on the previous state
-	msg_add_writemem(M65_IO_ADDR(0xD680), 1, &byteval);
+	//byteval = com.sdhc ? 0x41 : 0x40;	// SDHC mode on/off based on the previous state
+	msg_add_writebyte(M65_IO_ADDR(0xD680), com.sdhc ? 0x41 : 0x40);
 	// Again, we wait and read status ...
 	stindex3 = msg_add_waitsd();
 	// Commit our chained sequence of monitor commands expressed above starting with msg_begin()
@@ -553,16 +607,18 @@ static int sd_reset ( void )
 		fprintf(stderr, "Error in communication while issuing the RESET sequence ...\n");
 		return -1;
 	}
-	printf("  RESET STAT: after cmd-reset = $%02X(err=$%02X), after cmd-end-reset = $%02X(err=$%02X), after cmd-sdhc-set/reset = $%02X(err=$%02X)\n",
+#endif
+	//printf("  RESET STAT: after cmd-reset = $%02X(err=$%02X), after cmd-end-reset = $%02X(err=$%02X), after cmd-sdhc-set/reset = $%02X(err=$%02X)\n",
+	printf("  RESET STAT: after end-reset = $%02X(err=$%02X), after cmd-sdhc-set/reset = $%02X(err=$%02X)\n",
 		com.r_buf[stindex1], com.r_buf[stindex1] & SD_STATUS_ERROR_MASK,
-		com.r_buf[stindex2], com.r_buf[stindex2] & SD_STATUS_ERROR_MASK,
-		com.r_buf[stindex3], com.r_buf[stindex3] & SD_STATUS_ERROR_MASK
+		com.r_buf[stindex2], com.r_buf[stindex2] & SD_STATUS_ERROR_MASK//,
+		// com.r_buf[stindex3], com.r_buf[stindex3] & SD_STATUS_ERROR_MASK
 	);
-	if ((com.r_buf[stindex3] & SD_STATUS_SDHC_FLAG) != com.sdhc) {
+	if ((com.r_buf[stindex2] & SD_STATUS_SDHC_FLAG) != com.sdhc) {
 		fprintf(stderr, "FATAL ERROR: SDHC flag changed during the reset????\n");
 		return -1;
 	}
-	com.sdstatus = com.r_buf[stindex3];
+	com.sdstatus = com.r_buf[stindex2];
 	// it seems M65 always reports error no matter how hard I try reset ...
 	// but it also seems that next read will be OK ...
 	// so just fake that status does not contain error condition anymore :-O
@@ -659,7 +715,7 @@ static int sd_get_sdhc ( void )
 
 
 // see sd_read_sector for some additional comments
-static int sd_write_sector ( unsigned int sector, unsigned char *data )
+static int sd_write_sector ( unsigned int sector, const unsigned char *data )
 {
 	unsigned char buffer[4];
 	int sd_status_index0, sd_status_index1, sd_status_index2, sd_data_index;

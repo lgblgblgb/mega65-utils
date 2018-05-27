@@ -39,7 +39,7 @@ struct mfat32_dir_entry {
 
 extern int mfat32_mount ( 
 	int (*reader_callback)(unsigned int, unsigned char*),
-	int (*writer_callback)(unsigned int, unsigned char*),
+	int (*writer_callback)(unsigned int, const unsigned char*),
 	unsigned int set_starting_sector,
 	unsigned int set_partition_size
 );
