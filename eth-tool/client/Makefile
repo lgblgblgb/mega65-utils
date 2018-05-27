@@ -26,7 +26,10 @@ $(PRGWIN32): linux-client.c minifat32.c minifat32.h gfxdemo.c gfxdemo.h photo.c 
 $(PRGWIN64): linux-client.c minifat32.c minifat32.h gfxdemo.c gfxdemo.h photo.c windows-hacks.c Makefile
 	$(CCWIN64) -o $(PRGWIN64) $(CFLAGSWIN) linux-client.c minifat32.c gfxdemo.c -lwsock32
 
+install: $(PRG)
+	cp $(PRG) /usr/local/bin/
+
 clean:
 	rm -f $(PRG) $(PRGWIN32) $(PRGWIN64) *.o
 
-.PHONY: clean all all-archs
+.PHONY: clean all all-archs install

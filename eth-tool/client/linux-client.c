@@ -1158,6 +1158,46 @@ static int cmd_memrd ( int argc, char **argv )
 	return 0;
 }
 
+
+static int cmd_iord ( int argc, char **argv )
+{
+	int addr = get_param_as_num(argc ? argv[0] : NULL);
+	if (addr < 0)
+		return -1;
+	addr = (addr & 0xFFF) | 0xD000;
+	msg_begin();
+	int mem_index = msg_add_readmem(M65_IO_ADDR(addr), 1);
+	if (msg_commit())
+		return -1;
+	printf("Content of I/O register $%04X (%d) is $%02X\n", addr, addr, com.r_buf[mem_index]);
+	return 0;
+}
+
+
+static int cmd_iowr ( int argc, char **argv )
+{
+	if (argc != 2) {
+		fprintf(stderr, "Two parameters are needed: I/O address and the data to be written.\n");
+		return -1;
+	}
+	int addr = get_param_as_num(argv[0]);
+	if (addr < 0)
+		return -1;
+	addr = (addr & 0xFFF) | 0xD000;
+	int data = get_param_as_num(argv[1]);
+	if (data < 0 || data > 0xFF) {
+		fprintf(stderr, "Data value must be in range of 0...255\n");
+		return -1;
+	}
+	msg_begin();
+	msg_add_writebyte(M65_IO_ADDR(addr), data);
+	if (msg_commit())
+		return -1;
+	printf("Content of I/O register $%04X (%d) is written with $%02X\n", addr, addr, data);
+	return 0;
+}
+
+
 static int cmd_sdrdsect ( int argc, char **argv )
 {
 	int addr = get_param_as_num(argc ? argv[0] : NULL);
@@ -1494,7 +1534,16 @@ static int cmd_chdir ( int argc , char **argv )
 		fprintf(stderr, "One paramter needed, directory to change to\n");
 		return -1;
 	}
-	return mfat32_chdir(argv[0]);
+	if (!strcmp(argv[0], "/") || !strcmp(argv[0], "\\")) {
+		mfat32_chroot();
+		return 0;
+	} else {
+		if (strchr(argv[0], '/') || strchr(argv[0], '\\')) {
+			fprintf(stderr, "Monitor currently does not support names with path info, only single names\n");
+			return -1;
+		} else
+			return mfat32_chdir(argv[0]);
+	}
 }
 
 
@@ -1510,6 +1559,8 @@ static const struct {
 	{ "gfxdemo", cmd_gfxdemo, "Well, surprise :) - but you must watch your M65 screen meanwhile" },
 	{ "download", cmd_download, "Download a file from SD-card (FAT and local filenames must be specified)" },
 	{ "dir", cmd_dirtest, "Simple test, trying directory ..." },
+	{ "iord", cmd_iord, "Read a value of an I/O register (address of register is needed)" },
+	{ "iowr", cmd_iowr, "Write a value of an I/O register (address of register and data to be written is needed)" },
 	{ "test", cmd_test, "Simple test to put clock on M65 screen, and read first line of M65 screen back" },
 #ifdef SUPPORT_UPLOAD
 	{ "reupload", cmd_reupload, "Re-upload file to SD-card, ie, an existing, matching length file (FAT and local filenames must be given) is replaced" },

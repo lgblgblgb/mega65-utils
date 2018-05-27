@@ -166,7 +166,7 @@ int mfat32_mount (
 	fs.current_cluster = -1;
 	fs.current_directory = fs.root_directory;
 	fs.in_cluster_index = -1;
-	printf("Filesystem has just been put into use, boot record @ %d [%d sectors long]\n", set_starting_sector, set_partition_size);
+	printf("Filesystem has just been put into use, boot record @ %d [%d sectors long] rootdir @ %d\n", set_starting_sector, set_partition_size, fs.root_directory);
 	return 0;
 error:
 	fs.part_start = -1;
@@ -325,6 +325,11 @@ int mfat32_chdir ( const char *dirname )
 		return -1;
 	}
 	fs.current_directory = entry.cluster;
+	if (fs.current_directory < 2) {
+		printf("CHDIR: trying to chdir to cluster %d (<2), selecting the root instead.\n", fs.current_directory);
+		mfat32_chroot();
+	} else
+		printf("CHDIR: changing to \"%s\" (cluster=%d)\n", dirname, entry.cluster);
 	return 0;
 }
 
@@ -332,6 +337,7 @@ int mfat32_chdir ( const char *dirname )
 void mfat32_chroot ( void )
 {
 	fs.current_directory = fs.root_directory;
+	printf("CHDIR: changing to / (cluster=%d)\n", fs.root_directory);
 }
 
 

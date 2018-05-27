@@ -52,10 +52,11 @@ static int windows_init ( void )
 static char *readline ( const char *prompt )
 {
 	char *buffer = malloc(256);
-	char *s;
+	if (!buffer)
+		return NULL;
 	if (prompt)
-		printf(prompt);
-	s = fgets(buffer, 256, stdin);
+		printf("%s", prompt);
+	char *s = fgets(buffer, 256, stdin);
 	if (s) {
 		while (*s != 13 && *s != 10 && *s)
 			s++;
@@ -79,7 +80,11 @@ static void write_history ( const char *unused )
 {
 }
 
+
+static const char some_network_error[] = "I have to invent some winsock2 error handling :-O";
+
+
 static const char *hstrerror ( int err )
 {
-	return "Some network error";
+	return some_network_error;
 }

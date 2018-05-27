@@ -2,11 +2,7 @@
 #define BUSE_H_INCLUDED
 #ifdef USE_BUSE
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-  
-  /* Most of this file was copied from nbd.h in the nbd distribution. */
+/* Most of this file was copied from nbd.h in the nbd distribution. */
 #include <linux/types.h>
 #include <sys/types.h>
 #include <linux/nbd.h>
@@ -25,10 +21,6 @@ extern "C" {
   };
 
   int buse_main(const char* dev_file, const struct buse_operations *bop, void *userdata);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif
 #endif /* BUSE_H_INCLUDED */
