@@ -1,0 +1,143 @@
+;   Some file-commander like study for Mega65 computer.
+;   
+;   Copyright (C)2019 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+;
+; This program is free software; you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation; either version 2 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program; if not, write to the Free Software
+; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+
+; Mega65 specific routines written in assembly instead of C
+
+.CODE
+
+.SETCPU "4510"
+
+FONTDATA = $F800
+
+.PROC fake_int_handler
+	INC	$D021
+	RTI
+.ENDPROC
+
+; void m65_sys_prepare (void);
+; This function will not return and even modifies the stack ...
+; It directly jumps on the common m65c_main, which MUST NOT try to return ever!
+.SEGMENT "INIT"
+.IMPORT	_main_common
+.EXPORT	_m65_sys_prepare
+.PROC	_m65_sys_prepare
+	; Disable interrupts
+	SEI
+	; Enable VIC-IV aka M65 I/O mode
+	LDA	#$47
+	STA	$D02F
+	LDA	#$53
+	STA	$D02F
+	; We want to be faaaast :)
+	LDA	#65
+	STA	0
+	LDA	#$2F
+	STA	0
+	; Memory configuration: all RAM, but chargen ROM
+	LDA	#%001
+	STA	1
+	; Construct our charset now (first only copy lower case charset simply)
+	LDY	#8
+	LDX	#0
+:	LDA	$D800,X
+	STA	FONTDATA,X
+	INX
+	BNE	:-
+	INC	2 + :-
+	INC	5 + :-
+	DEY
+	BNE	:-
+	; Copy lower-case characters to the ASCII's std position from char-rom
+	LDX	#0
+:	LDA	$D808,X
+	STA	$61*8+FONTDATA,X
+	INX
+	CPX	#26*8
+	BNE	:-
+	; Memory configuration: all RAM, but I/O
+	LDA	#%101
+	STA	1
+	; Set some interrupt handler, though it's not used currently
+	; (it must be done after setting up charset, as it overlaps its very end ...)
+	LDA	#.LOBYTE(fake_int_handler)
+	STA	$FFFE
+	LDA	#.HIBYTE(fake_int_handler)
+	STA	$FFFF
+	; Set H640+attributes+C65 fast
+	LDA	#$E0
+	STA	$D031
+	; Set VIC bank to 3 (low two bits to zero)
+	LDA	$DD00
+	AND	#$FC
+	STA	$DD00
+	; Memory pointers for VIC
+	LDA	#%11001110
+	STA	$D018
+	; Set 2K colour mode in I/O area (covers CIAs!!!!!)
+	LDA	$D030
+	ORA	#1
+	STA	$D030
+	; End, it does not RETURN, warning, but gives control to the "common main".
+	; We also mess the stack pointer up to have as much space available in the stack as possible
+	LDX	#$FF
+	TXS
+	JMP	_main_common
+.ENDPROC
+.CODE
+
+
+; FIXME: this routine should be kept on an address which is not under a ROM when we switch ROMs back
+.EXPORT	_m65c_exit
+.PROC	_m65c_exit
+	LDA	#0
+	STA	$D031
+	STA	$D02F	; MESS up the I/O mode, by will
+	; switch ROM back
+	LDA	#$7
+	STA	1
+	; Jump on reset routine
+	JMP	64738
+.ENDPROC
+
+; Uint8 sys_checkkey ( void )
+; check key, return 0 if no, otherwise the key code, no wait for key, does NOT remove the key from queue
+;.EXPORT	_sys_checkkey
+;.PROC	_sys_checkkey
+;	LDA	#
+;.ENDPROC
+
+; Uint8 sys_getkey ( void )
+; check key, return 0 if no, otherwise the key code, no wait for key, DOES remove the key from queue 
+.EXPORT	_sys_getkey
+.PROC	_sys_getkey
+	LDA	$D610
+	BEQ	:+
+	STA	$D610
+:	RTS
+.ENDPROC
+
+; Uint8 sys_waitkey ( void )
+; check key, WAIT for the key, DOES remove the key from the queue
+.EXPORT	_sys_waitkey
+.PROC	_sys_waitkey
+:	LDA	$D610
+	BEQ	:-
+	STA	$D610
+	RTS
+.ENDPROC
