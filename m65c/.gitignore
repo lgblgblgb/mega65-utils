@@ -1,5 +1,8 @@
 *.o
 *.prg
+*.s
+*.exe
+*.dll
 m65c
 m65c.map
 uart.sock

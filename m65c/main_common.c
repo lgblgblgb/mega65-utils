@@ -34,6 +34,11 @@ void clear_screen ( void )
 
 static const char panic_msg[] = " *** PANIC. SPACE to exit. Msg:";
 
+#ifdef MEGA65
+extern Uint16 ethernet_poll ( void );
+#endif
+
+
 void PANIC ( const char *msg )
 {
 	SET_BGCOL(0);
@@ -41,9 +46,8 @@ void PANIC ( const char *msg )
 	memset(cram,   13, 160);
 	memcpy(vram, panic_msg, strlen(panic_msg));
 	memcpy(vram + 81, msg, strlen(msg));
-	while (sys_waitkey() != 0x20)
-		;
-	m65c_exit(1);
+	while (sys_waitkey() != 0x20);
+	EXIT(1);
 }
 
 
@@ -51,9 +55,38 @@ void PANIC ( const char *msg )
 static const char title[] = "Press keys for a while (do not overflow the screen please). Press q to exit.";
 
 
+#ifdef MEGA65
+
+static const Uint8 hexdigits[] = "0123456789ABCDEF";
+
+
+void show_eth_buffer ( void )
+{
+	Uint8 *s = vram + 160;
+	int a;
+	vram[80] = hexdigits[PEEK(0x2FF) >> 4];
+	vram[81] = hexdigits[PEEK(0x2FF) & 15];
+	vram[82] = hexdigits[PEEK(0x2FE) >> 4];
+	vram[83] = hexdigits[PEEK(0x2FE) & 15];
+
+	for (a = 0; a < 6; a++) {
+		Uint8 c = PEEK(0xD6E9 + (unsigned int)a);
+		vram[100 + a * 2] = hexdigits[c >> 4];
+		vram[101 + a * 2] = hexdigits[c & 15];
+	}
+	for (a = 0; a < 400; a++) {
+		Uint8 c = eth_buffer[a];
+		s[0] = hexdigits[c >> 4];
+		s[1] = hexdigits[c & 15];
+		s += 4;
+	}
+}
+#endif
+
+
 
 // This is our real "main" function. It MUST NOT RETURN ever, or bad things happen at least on CC65!
-// Use PANIC() to exit with a panic msg, or m65c_exit() to simply exit.
+// Use PANIC() to exit with a panic msg, or EXIT() to simply exit.
 void main_common ( void )
 {
 	Uint16 a;
@@ -63,13 +96,18 @@ void main_common ( void )
 	memcpy(vram, title, strlen(title));
 	a = 80;
 	for (;;) {
+#ifdef MEGA65
+		ethernet_poll();
+		//show_eth_buffer();
+#else
 		Uint8 k = sys_waitkey();
 		if (k == 'q') {
-			//m65c_exit(0);
+			//EXIT(0);
 			PANIC("Exit magic key is pressed, this is a test panic message ;-P");
 		}
 		vram[a] = k;
 		a++;
+#endif
 	}
 }
 

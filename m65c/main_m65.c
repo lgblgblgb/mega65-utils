@@ -21,8 +21,10 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include "m65c.h"
 
 
-Uint32 sd_size;
-Uint32 sd_block;
+Uint32 sd_size;			// SD card size in blocks
+Uint32 sd_block;		// SD block to read/write
+Uint32 sd_first;		// first block to valid to r/w (ie "begin of partition")
+Uint32 sd_last;			// last block to valid to r/w (ie: "end of partition")
 
 Uint8 sd_read_block ( void ) 
 {
@@ -37,14 +39,14 @@ Uint8 sd_write_block ( void )
 
 static void sd_init ( void )
 {
+	sd_first = 0;
+	sd_last = sd_size;
 }
 
 
-extern void m65_sys_prepare();
-
+extern void m65_sys_prepare( void );	// from asm_m65.a65
 void main ( void )
 {
 	m65_sys_prepare();	// will NOT return here!
 }
-
 

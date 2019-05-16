@@ -1,4 +1,12 @@
-// This charset is taken from the Mega65 project.
+/* This charset is taken from the Mega65 project:
+   https://github.com/MEGA65/mega65-core/
+   This is a Commodore "layout" of charset. And as far as I known
+   open source, that is the reason why I don't use Commodore's
+   charset, which would be nicer, indeed (but it's maybe not free!).
+   We use ASCII layout, so we will "mangle" this charset, the reason
+   for CBM "layout" to simulate the same behaviour on UNIX/Windows
+   as it would be the case with the Mega65 build, where I use similar
+   thing, just started from the ROM charset ...  */
 
 0x3c,0x66,0x6e,0x6e,0x60,0x66,0x3e,0x00,
 0x3c,0x66,0x66,0x7e,0x66,0x66,0x66,0x00,

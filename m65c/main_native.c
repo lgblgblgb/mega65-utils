@@ -288,7 +288,7 @@ Uint8 sd_write_block ( void )
 static int sd_init ( const char *fn )
 {
 	printf("SD: trying to open SD card image: %s\n", fn);
-	int fd = open(fn, O_RDWR);
+	int fd = open(fn, O_RDWR|O_BINARY);
 	if (fd < 0) {
 		perror("open");
 		return -1;
@@ -322,7 +322,7 @@ static int sd_init ( const char *fn )
 
 
 
-void m65c_exit ( Uint8 retval )
+void EXIT ( Uint8 retval )
 {
 	printf("Exiting on request with retval of %d\n", retval);
 	exit(retval);

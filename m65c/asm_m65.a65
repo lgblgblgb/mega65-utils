@@ -1,7 +1,7 @@
 ;   Some file-commander like study for Mega65 computer.
 ;   
 ;   Copyright (C)2019 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
-;
+; -------------------------------------------------------------------------
 ; This program is free software; you can redistribute it and/or modify
 ; it under the terms of the GNU General Public License as published by
 ; the Free Software Foundation; either version 2 of the License, or
@@ -15,15 +15,28 @@
 ; You should have received a copy of the GNU General Public License
 ; along with this program; if not, write to the Free Software
 ; Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
-
-
+;
+; -------------------------------------------------------------------------
+;
 ; Mega65 specific routines written in assembly instead of C
+; On the long term, I would like more and more asm routines instead of C,
+; but till that it's easier to test more complex routine in C
+
 
 .CODE
 
 .SETCPU "4510"
 
-FONTDATA = $F800
+; DO NOT CHANGE IT, it depends on the VIC/CIA config in _m65_sys_prepare
+FONTDATA	= $F800
+
+; DO NOT CHANGE THESE!
+; OR if you do so, you must keep these in sync with the values in m65c.h for the C level stuff!
+
+ETH_BUF		= $300
+ETH_BUF_MAX_LEN	= $300
+SD_BUF		= ETH_BUF + ETH_BUF_MAX_LEN	; thus must be $600!!!!!!!!!!
+ETH_BUF_RX_SIZE	= ETH_BUF - 2	; must be right before ETH_BUF! so it's defined this way
 
 .PROC fake_int_handler
 	INC	$D021
@@ -64,11 +77,10 @@ FONTDATA = $F800
 	DEY
 	BNE	:-
 	; Copy lower-case characters to the ASCII's std position from char-rom
-	LDX	#0
-:	LDA	$D808,X
-	STA	$61*8+FONTDATA,X
-	INX
-	CPX	#26*8
+	LDX	#26*8
+:	LDA	$D808-1,X
+	STA	$61*8+FONTDATA-1,X
+	DEX
 	BNE	:-
 	; Memory configuration: all RAM, but I/O
 	LDA	#%101
@@ -93,33 +105,50 @@ FONTDATA = $F800
 	LDA	$D030
 	ORA	#1
 	STA	$D030
+	; Initialize ethernet
+	; We don't need to disable it too much ever. We simply don't care about it, if we don't use it ...
+        ; I've tried severel setup things here, with various settings to turn filters on/off, etc
+	LDA	$D6E5
+	AND	#$FE
+	ORA	#16+32
+	STA	$D6E5
+	JSR	_eth_ack
+	; empty M65's keyboard queue, just to be sure ...
+:	LDA	$D610
+	STA	$D610
+	BNE	:-
 	; End, it does not RETURN, warning, but gives control to the "common main".
 	; We also mess the stack pointer up to have as much space available in the stack as possible
+	; that is also reason you must not return from main_common() ... Instead just call EXIT() function.
 	LDX	#$FF
 	TXS
+	LDZ	#0	; just because ...
 	JMP	_main_common
 .ENDPROC
 .CODE
 
 
 ; FIXME: this routine should be kept on an address which is not under a ROM when we switch ROMs back
-.EXPORT	_m65c_exit
-.PROC	_m65c_exit
-	LDA	#0
-	STA	$D031
-	STA	$D02F	; MESS up the I/O mode, by will
-	; switch ROM back
-	LDA	#$7
+; void EXIT (Uint8 retval);
+; though, the argument never used (only on the native build), so who cares (as this function never returns)
+.EXPORT	_EXIT
+.PROC	_EXIT
+	SEI		; make sure we have disabled interrupts ...
+	LDA	#64	; normal speed
+	STA	0
+	LDA	#$7	; switch ROM back
 	STA	1
-	; Jump on reset routine
-	JMP	64738
+	STA	$D02F	; mess up I/O mode (VIC-IV mode may cause problems for C65/C64 mode, though I doubt ...)
+	JMP	($FFFC)	; jump on the reset routine
 .ENDPROC
 
 ; Uint8 sys_checkkey ( void )
 ; check key, return 0 if no, otherwise the key code, no wait for key, does NOT remove the key from queue
+; REMOVED: easier to do with a simple "PEEK" magic in a C header ...
 ;.EXPORT	_sys_checkkey
 ;.PROC	_sys_checkkey
-;	LDA	#
+;	LDA	$D610
+;	RTS
 ;.ENDPROC
 
 ; Uint8 sys_getkey ( void )
@@ -141,3 +170,355 @@ FONTDATA = $F800
 	STA	$D610
 	RTS
 .ENDPROC
+
+
+; -------------------- GENERIC M65 DMA ---------------------
+
+; DMA list for copying eth's RX buffer. This also CLEARS our target buffer first, just to be sure
+; some strange errornous frame triggers parsing a frame with the previous content if we don't
+; check the length field too much or so ?) TODO FIXME
+.SCOPE	dma_list_read_eth_buff
+start:
+	; First, Mega65 specific enhanced mode DMA "options"
+	.BYTE	$0A		; use F018-A style DMA list (that is one byte shorter than F018-B style ...)
+	.BYTE	$80, $FF	; select "source Megabyte" as $FF -> high I/O area, where eth buffer is, too
+	.BYTE	$81, $00	; select "target Megabyte" as zero (maybe this is not even needed ... TODO FIXME)
+	.BYTE	$00		; end of DMA enchanced options, now the selected F018-A style entry follows
+	; The option $00 closes the Mega65 specific part, now the specified format of F018-A DMA list follows
+	.BYTE	$00		; F018-A: DMA command+etc byte, it's copy here, not chained entry etc-etc, exactly gives zero
+len:	.WORD	ETH_BUF_MAX_LEN+2	; F018-A: DMA operation length. We want 3*256+2 bytes
+	.WORD	$E800		; source address, low 16 bits, for the hardware RX buffer for now
+	.BYTE	$0D		; bits 19-16 of the source address, for our RX buffer (higher bits of this byte should be not bothered, they means differet thing!)
+	.WORD	ETH_BUF-2	; target address, $300-2, that is our ethernet buffer (see m65c.h for more details why ... look for eth_buffer)
+	.BYTE	$00		; bits 19-16 of the target address
+	; do NOT try this at home, we miss two bytes, the modulo. As we don't use it, whatever it would be, makes no sense.
+	; THIS TRICK CANNOT BE USED IF CHAIN BIT IS ONE AND ANOTHER ENTRY FOLLOWS, since then it would be off by two ...
+.ENDSCOPE
+.SCOPE	dma_list_write_eth_buff
+start:
+	; First, Mega65 specific enhanced mode DMA "options"
+	.BYTE	$0A		; use F018-A style DMA list (that is one byte shorter than F018-B style ...)
+	.BYTE	$80, $00	; select "source Megabyte" as $FF -> high I/O area, where eth buffer is, too
+	.BYTE	$81, $FF	; select "target Megabyte" as zero
+	.BYTE	$00		; end of DMA enchanced options, now the selected F018-A style entry follows
+	; The option $00 closes the Mega65 specific part, now the specified format of F018-A DMA list follows
+	.BYTE	$00		; F018-A: DMA command+etc byte, it's copy here, not chained entry etc-etc, exactly gives zero
+len:	.WORD	ETH_BUF_MAX_LEN	; F018-A: DMA operation length. the caller must fill this field
+	.WORD	ETH_BUF		; source address, $300, that is our ethernet buffer (see m65c.h for more details why ... look for eth_buffer)
+	.BYTE	$00		; bits 19-16 of the source address
+	.WORD	$E800		; target address, low 16 bits, for the hardware RX buffer for now
+	.BYTE	$0D		; bits 19-16 of the target address, for our RX buffer (higher bits of this byte should be not bothered, they means differet thing!)
+	; do NOT try this at home, we miss two bytes, the modulo. As we don't use it, whatever it would be, makes no sense.
+	; THIS TRICK CANNOT BE USED IF CHAIN BIT IS ONE AND ANOTHER ENTRY FOLLOWS, since then it would be off by two ...
+.ENDSCOPE
+
+
+; Can be used from C ...
+; void __fastcall_ do_dma ( Uint8 *dma_list );
+.EXPORT	_do_dma
+.PROC	_do_dma
+	STX	$D701	; write the HIGH byte of the DMA list for DMA-ctrl
+	LDX	#0
+	STX	$D702	; write the bank byte, this also clears the Mbyte-slice ($D704) reg on M65 too. We use bank zero only for our program, where DMA list is.
+	STA	$D705	; write low byte of DMA-list, the same as D700, but for enchanced DMA mode. it *triggers* the DMA, and CPU is stopped meanwhile
+	RTS
+.ENDPROC
+
+
+; A macro to use _do_dma from assembly here, more easily. Assumes "fastcall" argument passing of _do_dma
+.MACRO	DO_DMA	list_addr
+	LDA	#.LOBYTE(list_addr)
+	LDX	#.HIBYTE(list_addr)
+	JSR	_do_dma
+.ENDMACRO
+
+
+; -------------------- ETHERNET STUFFS ---------------------
+
+;mac_addr:	.BYTE 0
+; IP policy: if the first byte is zero, then only the LAST byte is checked against received IP frames, which causes all bytes set then on the first received frame
+; Surely, DHCP can fill this too ...
+; Without prior IP config we accept any IP as "ours" ending with IP address '65'. THIS MAY COLLIDE WITH SOMETHING ON YOUR NETWORK THOUGH, BE AWARE THAT!!!!
+our_ip:		.BYTE 0,0,0,65
+
+
+; Input: X register: offset from ETH_BUF to check IP address against our_ip ...
+.PROC	is_our_ip
+	LDA	our_ip
+	BEQ	check_last_digit_only
+	CMP	ETH_BUF,X
+	BNE	ret
+	LDA	our_ip+1
+	CMP	ETH_BUF+1,X
+	BNE	ret
+	LDA	our_ip+2
+	CMP	ETH_BUF+2,X
+	BNE	ret
+check_last_digit_only:
+	LDA	our_ip+3
+	CMP	ETH_BUF+3,X
+ret:
+	RTS
+.ENDPROC
+
+
+
+.MACRO	swap_short_mem a1,a2,len
+	LDA	a1,X
+	LDY	a2,X
+	STY	a1,X
+	STA	a2,X
+	DEX
+	BPL	fokka
+.ENDMACRO
+
+
+
+.PROC	_eth_ack
+        ; * ACK' previous packet (what LSR does, last used buffer by ctrl is moved to the mapped bit), also at the FIRST iteration, it just do some kind of "init" for us
+        ;   and enable RX by triggering the eth ctrl's buffer swap requirement (see: LSR)
+        ; * do not hold ctrl in reset (bit 0 set with ORA)
+        ; * clear TX/RX IRQ signals (but IRQs are NOT enabled here, we're using just polling), any write to $D6E1 do, so it's OK
+	LDA	$D6E1
+	LSR
+	AND	#2
+	ORA	#1
+	STA	$D6E1
+	RTS
+.ENDPROC
+
+
+; Using .DBYT is ideal, since it defines a swapped (HI-LO byte order, instead of usual 6502 LO-HI) word size data! What we need in many network-related stuff ...
+; 8 bytes
+arp_req_sample:
+	.DBYT	1	; HTYPE, 1 = ethernet
+	.DBYT	$800	; PTYPE, $800 = IPV4, actually about similar as ethertype field (it mustn't be $806, as it refers to the protocol what is ARP assigned to)
+	.BYTE	6	; HLEN, size of hardware addresses, 6 for ethernet (number of octets in MAC addresses)
+	.BYTE	4	; PLEN, size of protocol addresses, 4 for IPv4, of course
+	.DBYT	1	; OPER, 1 = request, 2 = reply
+
+
+OUR_MAC	= $D6E9		; we get our MAC from the I/O area
+
+
+; This function mangles our eth buffer: source mac copied as destination, our MAC as set as source
+.PROC	prepare_mac_fields_for_answer_TODO_REMOVE
+	LDX	#5
+	; copy source mac as destination
+:	LDA	ETH_BUF+6,X
+	STA	ETH_BUF,X
+	; copy our own mac to source
+	LDA	OUR_MAC,X
+	STA	ETH_BUF+6,X
+	DEX
+	BPL	:-
+	RTS
+.ENDPROC
+
+
+;.EXPORT	ETH_ARP_FULL_SIZE
+
+ETH_BUF_TARGET_MAC	= ETH_BUF
+ETH_BUF_SOURCE_MAC	= ETH_BUF + 6
+ETH_BUF_ETHERTYPE_HI	= ETH_BUF + 12
+ETH_BUF_ETHERTYPE_LO	= ETH_BUF + 13
+ETH_BUF_ETH_PAYLOAD	= ETH_BUF + 14
+
+ETH_BUF_ARP_OPER_LO	= ETH_BUF_ETH_PAYLOAD + 7
+ETH_BUF_ARP_SOURCE_MAC	= ETH_BUF_ETH_PAYLOAD + 8
+ETH_BUF_ARP_SOURCE_IP	= ETH_BUF_ETH_PAYLOAD + 14
+ETH_BUF_ARP_TARGET_MAC	= ETH_BUF_ETH_PAYLOAD + 18
+ETH_BUF_ARP_TARGET_IP	= ETH_BUF_ETH_PAYLOAD + 24
+ETH_ARP_FULL_SIZE	= ETH_BUF_ETH_PAYLOAD + 28 - ETH_BUF
+
+ETH_BUF_IP_VERIHL	= ETH_BUF_ETH_PAYLOAD + 0
+ETH_BUF_IP_TOTAL_LENGTH	= ETH_BUF_ETH_PAYLOAD + 2
+ETH_BUF_IP_PROTO	= ETH_BUF_ETH_PAYLOAD + 9
+ETH_BUF_IP_SOURCE	= ETH_BUF_ETH_PAYLOAD + 12
+ETH_BUF_IP_TARGET	= ETH_BUF_ETH_PAYLOAD + 16
+ETH_BUF_IP_PAYLOAD	= ETH_BUF_ETH_PAYLOAD + 20
+
+ETH_BUF_ICMP_TYPE	= ETH_BUF_IP_PAYLOAD
+ETH_BUF_ICMP_CHKSUM	= ETH_BUF_IP_PAYLOAD + 2
+
+
+; Uint16 ethernet_poll ( void );
+; This function polls for received frames.
+; It handles ARP requests automatically inside, along with possible DHCP workflow (other than the first DISCOVER request you must send ...)
+; Received IPv4/UDP frames are returned though, return value is the size, eth_buf is filled (if retval is nonzero)
+; No other kind of frames (IPv6, TCP, ICMP) are returned though, since we don't support them at this state ...
+.EXPORT _ethernet_poll
+.PROC	_ethernet_poll
+	; ignore_frame is called when frame is not interesting for us
+	; set it to _ethernet_poll to try again (maybe we received another one meanwhile)
+	; set it to nothing_got to return ...
+	; the first is maybe better, but on a LAN with heavy broadcast/etc traffic it would cause performance problem, that this routine will block for a long time then ...
+	ignore_frame = _ethernet_poll
+	;ignore_frame = nothing_got
+	; Check, if something is received at all
+	LDA	$D6E1
+	AND	#$20
+	LBEQ	nothing_got
+	; There is something received. Now we just copy the eth buffer for the max size we want to handle at other level
+	; I guess, it's faster to do this, than check size, and set properly by some asm code, anyway ...
+	DO_DMA	(dma_list_read_eth_buff::start)
+	; Swap ethernet buffers, ASAP (to be able to receive other frame), now we can continue processing our copied buffer (meanwhile M65 can receive a new eth frame!)
+	JSR	_eth_ack
+	; Normalize size field, high byte
+	LDA	ETH_BUF_RX_SIZE + 1
+	AND	#%111
+	STA	ETH_BUF_RX_SIZE + 1
+	; Check ethernet-type. NOTES:
+	; We support only Ethernet-II frames for now
+	; Kind of "tags" (VLANs etc) are NOT supported and will cause to ignore those frames ....
+	LDA	ETH_BUF_ETHERTYPE_HI
+	CMP	#$08
+	BNE	ignore_frame	; we handle IPv4 + ARP only, both of them has the (network-byte-order ...) high byte as $08, so anything other is ignored
+	LDA	ETH_BUF_ETHERTYPE_LO
+	BEQ	found_ipv4	; IPv4 = low byte is zero
+	CMP	#$06		; if not IPv4 (tested above), try to check if it's ARP
+	BNE	ignore_frame	; if not ARP either, we give up here and ignore the frame
+	; *** So we must have ARP at this point!
+	; check if it's a well formed valid ARP request, based on a template
+	LDX	#8-1
+:	LDA	ETH_BUF_ETH_PAYLOAD,X
+	CMP	arp_req_sample,X
+	BNE	ignore_frame
+	DEX
+	BPL	:-
+	; Ok, it seems this *IS* an ARP request, a quite valid one ...
+	; Now it's time to check if it targets us (our IPv4 address)
+	LDX	#ETH_BUF_ARP_TARGET_IP - ETH_BUF	; check the ARP payload for "our IP", ie asking if someone asks our IP
+	JSR	is_our_ip
+	BNE	ignore_frame
+	; Very well ... it's really seems we need to answer, as we're the asked entity ...
+	; Keep in mind, that we have the request in ETH_BUF. So we can "mangle it" so it becomes the answer :)
+	INC	$D020
+	LDA	#2		; patch our ARP request (1) to become an answer (2)
+	STA	ETH_BUF_ARP_OPER_LO
+	; Exchange/set needed mac related fields
+	LDX	#6-1
+:	LDA	ETH_BUF_SOURCE_MAC,X	; copy eth's source mac as destination mac
+	STA	ETH_BUF_TARGET_MAC,X
+	LDA	ETH_BUF_ARP_SOURCE_MAC,X	; ARP level MAC swap
+	STA	ETH_BUF_ARP_TARGET_MAC,X
+	LDA	OUR_MAC,X	; copy our mac as source at eth frame level and ARP proto level as well
+	STA	ETH_BUF_SOURCE_MAC,X
+	STA	ETH_BUF_ARP_SOURCE_MAC,X
+	DEX
+	BPL	:-
+	; Exchange proto level IP data
+	LDX	#4-1
+:	LDA	ETH_BUF_ARP_SOURCE_IP,X
+	LDY	ETH_BUF_ARP_TARGET_IP,X
+	STY	ETH_BUF_ARP_SOURCE_IP,X
+	STA	ETH_BUF_ARP_TARGET_IP,X
+	STY	our_ip,X		; also "learn" our own IP from the ARP request (it's only make difference, if we have the 0.0.0.65 situation as our first IP ...)
+	DEX
+	BPL	:-
+	; OK then, let's see ... send it!!!!
+	LDA	#ETH_ARP_FULL_SIZE	; hmmm, we hard code this as the length ....
+	LDX	#0
+	JSR	_ethernet_send
+	JMP	ignore_frame	; nothing received we haven't handled here, so this is the right thing here to do!
+	; End of ARP handling!!!
+	; *** Default nothing found return point ....
+nothing_got:
+	LDA	#0
+	TAX
+	RTS
+	; *** we have IPv4 stuff
+found_ipv4:
+	; TODO: check size ! check if fragmented !
+	LDA	ETH_BUF_IP_VERIHL
+	CMP	#$45		; stupid enough, we handle only basic IP header, and ignore all IP packets with options (thus IHL must be 5, the 4 nibble is for version IPv4)
+	LBNE	ignore_frame
+	LDA	ETH_BUF_IP_PROTO
+	CMP	#1		; ICMP?
+	LBNE	ignore_frame
+	LDA	ETH_BUF_ICMP_TYPE
+	CMP	#8		; echo request aka "PING"?
+	LBNE	ignore_frame
+	LDA	#0		; set type for ICMP echo reply
+	STA	ETH_BUF_ICMP_TYPE
+	; Now, we should deal with the ICMP checksum. So bad ....
+	; However clever math say, that 1's complement (!!) checksum can be updated
+	; if we add the difference. And with icmp reply we just send back the request with single byte modified (ICMP type).
+	LDA	ETH_BUF_ICMP_CHKSUM
+	CLC
+	ADC	#8	; the "difference"
+	STA	ETH_BUF_ICMP_CHKSUM
+	; Rest:
+	INC	$D021
+	JSR	swap_mac
+	JSR	swap_ip
+	LDA	ETH_BUF_IP_TOTAL_LENGTH + 1
+	CLC
+	ADC	#14		; add the size of the ethernet header ...
+	LDX	#0		; high byte is zero, we deal with small stuffs only ;-P
+	JSR	_ethernet_send
+	JMP	nothing_got
+.ENDPROC
+
+
+.PROC	swap_mac
+	LDX	#6-1
+:	LDA	ETH_BUF_SOURCE_MAC,X
+	LDY	ETH_BUF_TARGET_MAC,X
+	STY	ETH_BUF_SOURCE_MAC,X
+	STA	ETH_BUF_TARGET_MAC,X
+	DEX
+	BPL	:-
+	RTS
+.ENDPROC
+
+
+.PROC	swap_ip
+	LDX	#4-1
+:	LDA	ETH_BUF_IP_SOURCE,X
+	LDY	ETH_BUF_IP_TARGET,X
+	STY	ETH_BUF_IP_SOURCE,X
+	STA	ETH_BUF_IP_TARGET,X
+	DEX
+	BPL	:-
+	RTS
+.ENDPROC
+
+
+
+
+;.EXPORT	_ethernet_remote_keyboard
+;.PROC	_ethernet_remote_keyboard
+;	JSR	_ethernet_poll
+;.ENDPROC
+
+; FIXME TODO: we should check if we can send at all :-O
+.EXPORT	_ethernet_send
+.PROC	_ethernet_send
+	STA	$D6E2	; store size to send, low byte
+	STA	dma_list_write_eth_buff::len
+	STX	$D6E3	; store size to send, high byte
+	STX	dma_list_write_eth_buff::len + 1
+	; copy our buffer to the TX buffer with DMA
+	DO_DMA	(dma_list_write_eth_buff::start)
+	; trigger TX
+	LDA	#1
+	STA	$D6E4
+	RTS
+.ENDPROC
+
+
+dhcp_request_template:
+	; UDP frame
+	; UDP payload
+	.BYTE	1	; DHCP operation code: DISCOVER
+	.BYTE	1	; HTYPE: ethernet
+	.BYTE	6	; HLEN: media-level length, for ethernet 6, since MAC addresses are 6 bytes long
+	.BYTE	0	; HOPS
+	; "XID" a 4 byte long transaction ID choosen by us (the client). 
+	.BYTE	$01,$02,$03,$04
+	.WORD	0, 0	; "SECS" and "FLAGS"
+
+
+
+
