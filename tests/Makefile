@@ -20,7 +20,7 @@ dmatest65.prg: dmatest.a65
 
 sd_status_test.prg: sd_status_test.c sd_status_test_asm.a65 Makefile
 	@rm -f sd_status_test.o sd_status_test_asm.o
-	$(CL65) -Os -Or -Oi -t c64 -o $@ sd_status_test.c sd_status_test_asm.a65
+	$(CL65) -O -Os -Or -Oi -t c64 -o $@ sd_status_test.c sd_status_test_asm.a65
 	@rm -f sd_status_test.o sd_status_test_asm.o
 
 sd_status_test_m65: sd_status_test.prg

@@ -1,0 +1,21 @@
+ Test :)
+ RESET: clear SDHC {40} 50 000000 40
+ RESET: begin      {00} 40 000000 46
+ RESET: end        {01} 46 000000 42 001377 40
+ RESET: set SDHC   {41} 40 000000 50
+ Read sect-0       {02} 50 000000 13 0007BC 12  000000 10
+ Read invalid      {02} 10 000000 13 0002BB 50
+ Read sect-0       {02} 50
+ RESET: clear SDHC {40} 50 000000 40
+ RESET: begin      {00} 40 000000 46
+ RESET: end        {01} 46 000000 42 001387 40
+ RESET: set SDHC   {41} 40 000000 50
+ Invalid command   {76} 50
+ RESET: clear SDHC {40} 50 000000 40
+ RESET: begin      {00} 40 000000 06
+ RESET: end        {01} 06 000000 02 001387 00
+ RESET: set SDHC   {41} 00 000000 10
+ SDHC off?         {40} 10 000000 00
+ SDHC on?          {41} 00 000000 10
+
+ ready.

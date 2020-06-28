@@ -41,14 +41,13 @@ KEY_REG	= $D02F
 .ENDPROC
 
 
-
+; fastcall: byte argument will be in register 'A'
 .PROC	_test_command
-	SEI
+	; well, maybe we don't need to preserve all registers, but ...
 	PHA
 	PHX
 	PHY
 	PHZ
-	LDA	_test_status
 	LDX	SD_STATUS_REG	; store intiial flag status (before the command!) as the first test result
 	STX	sd_status_compare
 	STX	_test_status
@@ -92,6 +91,5 @@ return:
 	PLY
 	PLX
 	PLA
-	CLI
 	RTS
 .ENDPROC

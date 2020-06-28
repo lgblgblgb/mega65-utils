@@ -5,6 +5,25 @@ bin/ directory, in the form of invididual PRG files, or a D81 disk image.
 
 Currently:
 
+## sd_status_test
+
+Intended to test MEGA65's SD-card controller. Must be loaded in C64 mode
+of MEGA65. Output syntax:
+
+MESSAGE [CMD] status delay status2 delay2 status3 ....
+
+Where MESSAGE is some message from the test program (purpose of the given
+test), CMD is the hex value of the issued command. The first 'status' is
+the status BEFORE the command was issued, after that pairs of delay and
+status to see any status change with the delay measured for that change.
+
+Compile: make sd_status_test.prg
+
+Test on MEGA65 (using M65 and FTDI JTAG module): make sd_status_test_m65
+
+TODO: the "delay" 6 hex digit value should be converted into a sane time
+unit :)
+
 ## DMAtest
 
 It's intended to test on *REAL* C65s to see some corner cases and not too
