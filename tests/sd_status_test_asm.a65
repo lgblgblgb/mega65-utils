@@ -1,0 +1,97 @@
+.SETCPU "4510"
+
+.IMPORT	_number_of_results
+.IMPORT	_test_status
+.IMPORT _test_timing_lo
+.IMPORT _test_timing_mi
+.IMPORT _test_timing_hi
+
+.EXPORT _test_command
+.EXPORT _set_test_mode
+.EXPORT _set_c64_mode
+
+SD_STATUS_REG  = $D680
+SD_COMMAND_REG = $D680
+KEY_REG	= $D02F
+
+.SEGMENT "CODE"
+
+.PROC	_set_test_mode
+	SEI
+	PHA
+	LDA	#65
+	STA	0
+	LDA	#$47
+	STA	KEY_REG
+	LDA	#$53
+	STA	KEY_REG
+	PLA
+	RTS
+.ENDPROC
+
+
+.PROC	_set_c64_mode
+	PHA
+	LDA	#64
+	STA	0
+	STA	KEY_REG
+	CLI
+	PLA
+	RTS
+.ENDPROC
+
+
+
+.PROC	_test_command
+	SEI
+	PHA
+	PHX
+	PHY
+	PHZ
+	LDA	_test_status
+	LDX	SD_STATUS_REG	; store intiial flag status (before the command!) as the first test result
+	STX	sd_status_compare
+	STX	_test_status
+	LDX	#1		; test result poiner is one, since the first element is already there as the intial status value!
+	STA	SD_COMMAND_REG	; initiate command [note: A register must be preserved till this point!] As close to the loop as possible.
+	; Delay / check loop!
+glob:
+	PHX			; save test result pointer
+	LDA	#0
+	TAZ
+	TAX
+	TAY
+wait:	LDA	SD_STATUS_REG
+	sd_status_compare = * + 1	; self modification is always fun, isn't it?
+	CMP	#$00
+	BNE	changed
+	INX
+	BNE	wait
+	INY
+	BNE	wait
+	INZ
+	BNE	wait
+	; End of test, since no status change could be detected before wait loop timed out [hopefully that was enough time]
+	PLX			; restore test result pointer
+	BRA	return
+changed:
+	; status changed!!!
+	STA	sd_status_compare
+	TXA
+	PLX			; restore test result pointer
+	STZ	_test_timing_hi,X
+	STY	_test_timing_mi,X
+	STA	_test_timing_lo,X
+	LDA	sd_status_compare
+	STA	_test_status,X
+	INX
+	BPL	glob		; do not allow more than 128 iterations ...
+return:
+	STX	_number_of_results
+	PLZ
+	PLY
+	PLX
+	PLA
+	CLI
+	RTS
+.ENDPROC

@@ -5,6 +5,7 @@ CL65		= cl65
 C1541		= c1541
 BITSTREAM	= ../../mega65-core/bin/nexys4ddr.bit
 MONITORLOAD	= ../../mega65-core/src/tools/monitor_load
+M65		= ../../mega65-tools/bin/m65
 
 all: $(DISK_IMAGE)
 
@@ -16,6 +17,14 @@ dmatest65.prg: dmatest.a65
 	@rm -f dmatest.o
 	$(CL65) -t none --asm-define C65_MODE -o $@ $<
 	@rm -f dmatest.o
+
+sd_status_test.prg: sd_status_test.c sd_status_test_asm.a65 Makefile
+	@rm -f sd_status_test.o sd_status_test_asm.o
+	$(CL65) -Os -Or -Oi -t c64 -o $@ sd_status_test.c sd_status_test_asm.a65
+	@rm -f sd_status_test.o sd_status_test_asm.o
+
+sd_status_test_m65: sd_status_test.prg
+	$(M65) -4 -r $<
 
 $(DISK_IMAGE): $(TEST_PROGRAMS)
 	rm -f $@
