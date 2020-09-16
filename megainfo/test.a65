@@ -1,0 +1,697 @@
+.SETCPU "4510"
+
+LOAD_ADDR	= $801
+VID_MEM_PAGE	= $F0
+;COL_MEM_PAGE	= $D8
+COLS		= 80
+
+
+.MACRO	STA32Z	zploc
+	NOP
+	STA	(zploc),Z
+.ENDMACRO
+.MACRO	LDA32Z	zploc
+	NOP
+	LDA	(zploc),Z
+.ENDMACRO
+.MACRO	CMP32Z	zploc
+	NOP
+	CMP	(zploc),Z
+.ENDMACRO
+.MACRO	HDOSCALL
+	STA	$D640	; DOS hypervisor trap on write (I/O mode for M65 should be enabled for this)
+	NOP		; A NOP is needed after a trap!
+.ENDMACRO
+
+
+.SEGMENT "BSS"
+
+	.ORG $C000
+
+os_version:		.RES 4
+
+
+.SEGMENT "ZEROPAGE"
+
+	.ORG		2
+
+screen_pos_addr:	.RES 2
+colour_pos_addr:	.RES 4	; we use lin32 addr for colour RAM, unlike video RAM
+addr_p:			.RES 4
+colour:			.RES 1
+string_p:		.RES 2
+glitch_counter:		.RES 1
+num:			.RES 2
+
+.SEGMENT "CODE"
+
+	.WORD		LOAD_ADDR
+	.ORG		LOAD_ADDR
+
+.SCOPE
+	.WORD	lastline, $FFFF
+	; TODO: for me, BASIC 10 "BANK" keyword is quite confusing. According to the available documentation,
+	; It's set the BANK number, with the extension that +128 means the "BASIC configuration" (I/O, etc)
+	; However according to my tests, it's not true. Using BANK 128 here, still does not work. What I can
+	; found only for a sane C65 loader is using BANK 0 before SYS, and doing all the memory MAP, etc then
+	; in machine code for the desired mode. I will do that, in routine init_system, see later.
+	;.WORD	$02FE                                   ; "BANK" basic 10 token (double byte token, btw)
+	;.BYTE	" 0 : "
+	.BYTE	$9E                                     ; "SYS" basic token
+	.BYTE	" "
+	.BYTE	$30+.LOBYTE((main .MOD 10000)/ 1000)
+	.BYTE	$30+.LOBYTE((main .MOD  1000)/  100)
+	.BYTE	$30+.LOBYTE((main .MOD   100)/   10)
+	.BYTE	$30+.LOBYTE( main .MOD    10)
+	.BYTE	0
+lastline:
+	.WORD	0
+.ENDSCOPE
+
+
+write_hex_byte:
+        PHA
+        LSR     A
+        LSR     A
+        LSR     A
+        LSR     A
+        JSR     write_hex_nybble
+        PLA
+	; fall-through!
+write_hex_nybble:
+	PHA
+        AND     #$F
+        ORA     #'0'
+        CMP     #'9'+1
+        BCC     :+
+        ADC     #6
+:	JSR	write_char
+	PLA
+	RTS
+write_char:
+	PHA
+	PHZ
+	LDZ	#0
+	STA	(screen_pos_addr),Z
+	INW	screen_pos_addr
+	LDA	colour
+	STA32Z	colour_pos_addr
+	INW	colour_pos_addr
+	PLZ
+	PLA
+	RTS
+
+
+.PROC	write_dec_byte
+	PHA
+	PHX
+	PHY
+	PHZ
+	STA	num
+	LDA	#0
+	STA	num+1
+	LDY	#0	; non-zero flag
+	JSR	_write_dec_byte
+	PLZ
+	PLY
+	PLX
+	PLA
+	RTS
+write_dec_word:
+	PHA
+	PHX
+	PHY
+	PHZ
+	STA	num
+	STX	num+1
+	LDY	#0	; non-zero flag
+	JSR	_write_dec_word
+	PLZ
+	PLY
+	PLX
+	PLA
+	RTS
+_write_dec_word:
+	LDA	#>10000
+	STA	minus_val_hi
+	LDA	#<10000
+	STA	minus_val_lo
+	JSR	_write_dec_convert
+	;
+	LDA	#>1000
+	STA	minus_val_hi
+	LDA	#<1000
+	STA	minus_val_lo
+	JSR	_write_dec_convert
+	; fall-through
+_write_dec_byte:
+	LDA	#0
+	STA	minus_val_hi
+	LDA	#100
+	STA	minus_val_lo
+	JSR	_write_dec_convert
+	;
+	LDA	#10
+	STA	minus_val_lo
+	JSR	_write_dec_convert
+	; Reminder, always print
+	LDA	num
+	BRA	print
+_write_dec_convert:
+	LDX	#0		; current digit value
+	SEC
+minus_loop:
+	LDA	num
+	minus_val_lo = * + 1
+	SBC	#0		; no need for SEC as it was before the loop OR within the loop with C set anyway
+	TAZ
+	LDA	num+1
+	minus_val_hi = * + 1
+	SBC	#0
+	BCC	end_of_minus_loop
+	INX
+	STZ	num
+	STA	num+1
+	BRA	minus_loop
+end_of_minus_loop:
+	TXA		; also sets zero flag
+	BEQ	zero
+	LDY	#1	; set non-zero-flag
+print:
+	CLC
+	ADC	#'0'
+	JMP	write_char
+zero:
+	CPY	#0
+	BNE	print
+	RTS
+.ENDPROC
+
+write_dec_word = write_dec_byte::write_dec_word
+
+
+
+
+
+write_space:
+	PHA
+	LDA	#32
+	JSR	write_char
+	PLA
+	RTS
+
+
+
+
+.MACRO  WRISTR  str
+        JSR     write_inline_string
+        .BYTE   str
+        .BYTE   0
+.ENDMACRO
+;.MACRO	GOTOXY	xpos, ypos
+;	JSR	gotoxy_inline
+;	.WORD	(ypos) * COLS + (xpos)
+;.ENDMACRO
+
+
+;gotoxy_inline:
+;	STA	@save
+;	PLA
+;	STA	string_p
+;	PLA
+;	STA	string_p+1
+;	PHZ
+;	LDZ	#0
+;	INW	string_p
+;	LDA	(string_p),Z	; will fetch high byte
+;	STA	colour_pos_addr+1
+;	CLC
+;	ADC	#VID_MEM_PAGE
+;	STA	screen_pos_addr+1
+;	INW	string_p
+;	LDA	(string_p),Z	; will fetch low byte
+;	STA	screen_pos_addr
+;	STA	colour_pos_addr
+;	INW	string_p
+;	PLZ
+;	@save	= * + 1
+;	LDA	#0
+;	JMP	(string_p)
+
+
+
+
+write_inline_string:
+	STA	@save
+        PLA
+        STA     string_p
+        PLA
+        STA     string_p+1
+        PHZ
+        LDZ     #0
+@loop:
+        INW     string_p
+        LDA     (string_p),Z
+        BEQ     @eos
+	CMP	#16
+	BCC	@gotoxy
+	CMP	#32
+	BCC	@colour
+        JSR     write_char
+        BRA     @loop
+@eos:
+        INW     string_p
+        PLZ
+	@save	= * + 1
+	LDA	#0
+        JMP     (string_p)
+@colour:
+	;INW	string_p
+	;LDA	(string_p),Z
+	AND	#$F
+	STA	colour
+	BRA	@loop
+@gotoxy:
+	AND	#7
+	STA	colour_pos_addr+1
+	CLC
+	ADC	#VID_MEM_PAGE
+	STA	screen_pos_addr+1
+	INW	string_p
+	LDA	(string_p),Z
+	STA	screen_pos_addr
+	STA	colour_pos_addr
+	BRA	@loop
+
+
+
+.DEFINE ITOK_XY(xp,yp)	.HIBYTE((yp)*COLS+(xp)+2048), .LOBYTE((yp)*COLS+(xp))
+.DEFINE ITOK_COLOUR(n)	(n)+16
+
+
+
+
+Lpeek_debounced:
+	PHX
+@restart:
+	LDX	#64
+	LDA32Z	addr_p
+@cmp_test:
+	CMP32Z	addr_p
+	BNE	@glitched
+	DEX
+	BNE	@cmp_test
+	PLX
+	RTS
+@glitched:
+	INC	glitch_counter
+	BRA	@restart
+
+
+
+
+rtc_update_screen:
+	; Set linear address of RTC stuffs
+	LDA	#$00
+	STA	addr_p
+	LDA	#$71
+	STA	addr_p+1
+	LDA	#$FD
+	STA	addr_p+2
+	LDA	#$0F
+	STA	addr_p+3
+	; Print time
+	LDA	#0			; glitch counter
+	STA	glitch_counter
+	LDZ	#$12			; Hours
+	JSR	Lpeek_debounced
+	JSR	write_hex_byte
+	LDA	#':'
+	JSR	write_char
+	DEZ				; mins
+	JSR	Lpeek_debounced
+	JSR	write_hex_byte
+	LDA	#':'
+	JSR	write_char
+	DEZ				; secs
+	JSR	Lpeek_debounced
+	JSR	write_hex_byte
+	JSR	write_space
+	LDZ	#$15			; year
+	JSR	Lpeek_debounced
+	JSR	write_hex_byte
+	LDA	#'-'
+	JSR	write_char
+	DEZ				; month
+	JSR	Lpeek_debounced
+	JSR	write_hex_byte
+	LDA	#'-'
+	JSR	write_char
+	DEZ				; day
+	JSR	Lpeek_debounced
+	JSR	write_hex_byte
+	WRISTR	" I2C-glitch=$"		; show glitch counter (as hex num)
+	LDA	glitch_counter
+	JMP	write_hex_byte
+	
+
+; !!!! Routine excepts first two bytes of addr_p being to set already to DC00 or DD00 values!
+tod_update_screen:
+	; TOD
+	LDY	#$B			; hours
+	LDA	(addr_p),Y
+	TAX			; store for later AM/PM handling
+	AND	#255-128-64	
+	JSR	write_hex_byte
+	LDA	#':'
+	JSR	write_char
+	DEY				; mins
+	LDA	(addr_p),Y
+	JSR	write_hex_byte
+	LDA	#':'
+	JSR	write_char
+	DEY				; secs
+	LDA	(addr_p),Y
+	JSR	write_hex_byte
+	LDA	#'.'
+	JSR	write_char
+	DEY				; 10th of secs
+	LDA	(addr_p),Y
+	JSR	write_hex_nybble
+	; Now AM/PM
+	LDY	#'A'
+	TXA
+	BPL	:+
+	LDY	#'P'
+:	TYA
+	JSR	write_char
+	WRISTR	"M  Ta="
+	LDA	#5
+	LDA	(addr_p),Y
+	JSR	write_hex_byte
+	DEY
+	LDA	(addr_p),Y
+	JSR	write_hex_byte
+	WRISTR	" Tb="
+	LDY	#7
+	LDA	(addr_p),Y
+	JSR	write_hex_byte
+	DEY
+	LDA	(addr_p),Y
+	JSR	write_hex_byte
+	RTS
+
+
+update_clocks_screen:
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 1,22
+	.BYTE	"RTC  ",0
+	JSR	rtc_update_screen
+	LDA	#$00
+	STA	addr_p
+	LDA	#$DC
+	STA	addr_p+1		; now addr_p = $DC00
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 1,23
+	.BYTE	"CIA1 ",0
+	JSR	tod_update_screen
+	INC	addr_p+1		; now addr_p = $DD00
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 1,24
+	.BYTE	"CIA2 ",0
+	JSR	tod_update_screen
+	RTS
+
+
+update_hwid_screen:
+	LDA	$D629
+	JSR	write_hex_byte
+	JSR	write_space
+	CMP	#0
+	BEQ	@unknown
+	CMP	#$10
+	BCC	@mega65_pcb
+	CMP	#$FF
+	BEQ	@unspecific
+	CMP	#$FE
+	BEQ	@simulation
+	CMP	#$FD
+	BEQ	@wukong
+	CMP	#$40
+	BEQ	@nexys4
+	CMP	#$41
+	BEQ	@nexys4ddr
+	CMP	#$42
+	BEQ	@nexys4widget
+	; fall-through
+@unknown:
+	WRISTR	"UNKNOWN"
+	RTS
+@mega65_pcb:
+	WRISTR	"MEGA65 PCB rev "
+	JMP	write_hex_nybble
+@unspecific:
+	WRISTR	"Unspecific/emulator"
+	RTS
+@simulation:
+	WRISTR	"simulation"
+	RTS
+@wukong:
+	WRISTR	"Wukong"
+	RTS
+@nexys4:
+	WRISTR	"Nexys4"
+	RTS
+@nexys4ddr:
+	JSR	@nexys4
+	WRISTR	"-DDR"
+	RTS
+@nexys4widget:
+	JSR	@nexys4
+	WRISTR	"+Widget"
+	RTS
+
+
+; Gets max scanline number in A (low byte only!)
+get_scanlines:
+	PHX
+	; if RST8 is set, wait till it's gone
+:	BIT	$D011
+	BMI	:-
+	; Now wait for RST8 is set again
+:	BIT	$D011
+	BPL	:-
+	; Now wait it goes away, also storing RST0-7
+:	LDX	$D012
+	BIT	$D011
+	BPL	:+
+	TXA		; yes, RST8 was still set, so OK to use X now as the result so far
+	BRA	:-
+	; OK.
+:	PLX
+	RTS
+
+
+get_bram:
+	LDA	#$FF
+	STA	addr_p
+	LDA	#$03
+	STA	addr_p+1
+	LDA	#$02
+	STA	addr_p+2
+	LDA	#$00
+	STA	addr_p+3
+	LDZ	#0
+	STZ	num
+	LDA	#1	; 256K already
+	STA	num+1
+@kbyte_loop:
+	LDA32Z	addr_p
+	STA	@restore
+	LDA	#0
+@byte_loop:
+	STA32Z	addr_p
+	CMP32Z	addr_p
+	BNE	@no_ram
+	INA
+	BNE	@byte_loop
+	@restore = * + 1
+	LDA	#0
+	STA32Z	addr_p
+	INW	num
+	INW	addr_p+1
+	INW	addr_p+1
+	INW	addr_p+1
+	INW	addr_p+1
+	BRA	@kbyte_loop
+@no_ram:
+	LDA	num
+	LDX	num+1
+	RTS
+
+
+clear_screen:
+	JSR	home
+	PHA
+	PHX
+	PHZ
+	LDZ	#0
+	LDX	#8
+:	LDA	#0
+	STA32Z	colour_pos_addr
+	LDA	#32
+	STA	(screen_pos_addr),Z
+	INZ
+	BNE	:-
+	INC	colour_pos_addr+1
+	INC	screen_pos_addr+1
+	DEX
+	BNE	:-
+	PLZ
+	PLX
+	PLA
+	; fall-through!
+home:
+	PHA
+	LDA	#0
+	STA	colour_pos_addr
+	STA	screen_pos_addr
+	STA	colour_pos_addr+1
+	LDA	#VID_MEM_PAGE
+	STA	screen_pos_addr+1
+	PLA
+	RTS
+
+
+
+not_a_mega65:
+	RTS
+
+
+main:
+	; Enable MEGA65 VIC-IV I/O mode
+	LDA	#$47
+	STA	$D02F
+	LDA	#$53
+	STA	$D02F
+	; Check if it's really a MEGA65, also queries HDOS version number
+	LDA	#0	; HDOS call number as input
+	HDOSCALL	; if it's really a MEGA65, A register will be modifed!
+	CMP	#0
+	BEQ	not_a_mega65
+	STX	os_version	; OS Version, X=lob
+	STA	os_version+1	; OS Version, A=hib
+	STZ	os_version+2	; DOS Version, Z=lob
+	STY	os_version+3	; DOS Version, Y=hib
+	; It's important to disable interrupts!
+	SEI
+	; Setup VIC II/III stuffs
+	LDA	#0
+	STA	$D015
+	STA	$D020
+	STA	$D021
+	LDA	$DD00		; About to change VIC-II bank
+	AND	#%11111100
+	STA	$DD00
+	LDA	#%11001110
+	STA	$D018		; chrgen=$F800, video_ram=$F000
+	LDA	#4
+	STA	$D030
+	LDA	#128+32
+	STA	$D031		; H640 + attribute mode
+	; Copy ROM charset, also slightly modify the order to have kind-of-ASCII layout
+	LDA	#1
+	STA	1		; make chrgen visible @ $D000, we copy charset from there
+	LDX 	#0
+@mangle_charset:
+        ; ***
+        ;LDY     #$E8            ; we use the SECOND 2K of CHR-WOM! So in case of reset, M65 will not display garbage, as it uses the first charset (uppercase+gfx)
+        ;STY     addr_p+1
+        LDA     #$FF
+        ;STA32Z  addr_p         ; well, that's only for making sure chars 0-31 are "blank" to catch problems, etc?
+	STA	$F800,X
+        ; ***
+        ;INY
+        ;STY     addr_p+1
+        LDA     $D000+32*8,X
+        ;STA32Z  addr_p
+	STA	$F900,X
+        ; ***
+        ;INY
+        ;STY     addr_p+1
+        LDA     $D000,X
+        ;STA32Z  addr_p
+	STA	$FA00,X
+        ; ***
+        ;INY
+        ;STY     addr_p+1
+        LDA     $D800,X
+        ;STA32Z  addr_p
+	STA	$FB00,X
+        INX
+        BNE     @mangle_charset
+
+	; All RAM-config, but I/O
+	LDA	#5
+	STA	1
+	; Set linear addr of MEGA65 colour RAM (only upper two bytes for now, as it does not change)
+	LDA	#$0F
+	STA	colour_pos_addr+3
+	LDA	#$F8
+	STA	colour_pos_addr+2
+	;JSR	setup_screen
+	; Print initial msg also the first thing needs to be initialize position and colour!!!!
+	;.BYTE	"LGB"
+	JSR	clear_screen
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 0,0
+	.BYTE	ITOK_COLOUR 2
+	.BYTE	" MEGA65info v0.1 (C)2020 LGB"
+	.BYTE	0
+	JSR	home
+	LDA	#$FF
+	LDZ	#79
+:	STA32Z	colour_pos_addr
+	DEZ
+	BPL	:-
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 1,2
+	.BYTE	"HW   ",0
+	JSR	update_hwid_screen
+
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 1,3
+	.BYTE	"VER  OS ",0
+	LDA	os_version+1
+	JSR	write_dec_byte
+	LDA	#'.'
+	JSR	write_char
+	LDA	os_version
+	JSR	write_dec_byte
+	WRISTR	" DOS "
+	LDA	os_version+3
+	JSR	write_dec_byte
+	LDA	#'.'
+	JSR	write_char
+	LDA	os_version+2
+	JSR	write_dec_byte
+
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 1,4
+	.BYTE	"VID  ",0
+	JSR	get_scanlines
+	LDX	#1	; high byte
+	JSR	write_dec_word
+
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 1,5
+	.BYTE	"BRAM ",0
+	JSR	get_bram
+	JSR	write_dec_word
+	
+@loop:
+	JSR	update_clocks_screen
+	BRA	@loop
+	RTS
+
+
