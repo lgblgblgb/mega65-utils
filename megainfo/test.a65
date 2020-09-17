@@ -5,6 +5,11 @@ VID_MEM_PAGE	= $F0
 ;COL_MEM_PAGE	= $D8
 COLS		= 80
 
+TITLE_COLOUR	= 2
+SUBTITLE_COLOUR	= 4
+TEXT_COLOUR	= 3
+BANNER_COLOUR	= $2D
+
 
 .MACRO	STA32Z	zploc
 	NOP
@@ -40,7 +45,7 @@ colour_pos_addr:	.RES 4	; we use lin32 addr for colour RAM, unlike video RAM
 addr_p:			.RES 4
 colour:			.RES 1
 string_p:		.RES 2
-glitch_counter:		.RES 1
+glitch_counter:		.RES 2
 num:			.RES 2
 
 .SEGMENT "CODE"
@@ -208,35 +213,28 @@ write_space:
         .BYTE   str
         .BYTE   0
 .ENDMACRO
-;.MACRO	GOTOXY	xpos, ypos
-;	JSR	gotoxy_inline
-;	.WORD	(ypos) * COLS + (xpos)
-;.ENDMACRO
+
+.MACRO	TITLE	xpos,ypos,str
+	JSR	write_inline_string
+	.BYTE	ITOK_XY xpos,ypos
+	.BYTE	ITOK_COLOUR TITLE_COLOUR
+	.BYTE	str
+	.BYTE	ITOK_COLOUR TEXT_COLOUR
+	.BYTE	0
+.ENDMACRO
+
+.MACRO	STITLE	str
+	JSR	write_inline_string
+	.BYTE	ITOK_COLOUR SUBTITLE_COLOUR
+	.BYTE	str
+	.BYTE	ITOK_COLOUR TEXT_COLOUR
+	.BYTE	0
+.ENDMACRO
+
+.DEFINE ITOK_XY(xp,yp)	.HIBYTE((yp)*COLS+(xp)+2048), .LOBYTE((yp)*COLS+(xp))
+.DEFINE ITOK_COLOUR(n)	(n)+16
 
 
-;gotoxy_inline:
-;	STA	@save
-;	PLA
-;	STA	string_p
-;	PLA
-;	STA	string_p+1
-;	PHZ
-;	LDZ	#0
-;	INW	string_p
-;	LDA	(string_p),Z	; will fetch high byte
-;	STA	colour_pos_addr+1
-;	CLC
-;	ADC	#VID_MEM_PAGE
-;	STA	screen_pos_addr+1
-;	INW	string_p
-;	LDA	(string_p),Z	; will fetch low byte
-;	STA	screen_pos_addr
-;	STA	colour_pos_addr
-;	INW	string_p
-;	PLZ
-;	@save	= * + 1
-;	LDA	#0
-;	JMP	(string_p)
 
 
 
@@ -285,12 +283,6 @@ write_inline_string:
 
 
 
-.DEFINE ITOK_XY(xp,yp)	.HIBYTE((yp)*COLS+(xp)+2048), .LOBYTE((yp)*COLS+(xp))
-.DEFINE ITOK_COLOUR(n)	(n)+16
-
-
-
-
 Lpeek_debounced:
 	PHX
 @restart:
@@ -304,25 +296,29 @@ Lpeek_debounced:
 	PLX
 	RTS
 @glitched:
-	INC	glitch_counter
+	INW	glitch_counter
 	BRA	@restart
+
+
+; A = bits 15-8 of the address to set
+addr_to_i2c:
+	STA	addr_p+1
+	LDA	#$00
+	STA	addr_p
+	LDA	#$FD
+	STA	addr_p+2
+	LDA	#$0F
+	STA	addr_p+3
+	RTS
 
 
 
 
 rtc_update_screen:
 	; Set linear address of RTC stuffs
-	LDA	#$00
-	STA	addr_p
 	LDA	#$71
-	STA	addr_p+1
-	LDA	#$FD
-	STA	addr_p+2
-	LDA	#$0F
-	STA	addr_p+3
+	JSR	addr_to_i2c
 	; Print time
-	LDA	#0			; glitch counter
-	STA	glitch_counter
 	LDZ	#$12			; Hours
 	JSR	Lpeek_debounced
 	JSR	write_hex_byte
@@ -351,6 +347,8 @@ rtc_update_screen:
 	JSR	Lpeek_debounced
 	JSR	write_hex_byte
 	WRISTR	" I2C-glitch=$"		; show glitch counter (as hex num)
+	LDA	glitch_counter+1
+	JSR	write_hex_byte
 	LDA	glitch_counter
 	JMP	write_hex_byte
 	
@@ -403,22 +401,16 @@ tod_update_screen:
 
 
 update_clocks_screen:
-	JSR	write_inline_string
-	.BYTE	ITOK_XY 1,22
-	.BYTE	"RTC  ",0
+	TITLE	1,22,"RTC  "
 	JSR	rtc_update_screen
 	LDA	#$00
 	STA	addr_p
 	LDA	#$DC
 	STA	addr_p+1		; now addr_p = $DC00
-	JSR	write_inline_string
-	.BYTE	ITOK_XY 1,23
-	.BYTE	"CIA1 ",0
+	TITLE	1,23,"CIA1 "
 	JSR	tod_update_screen
 	INC	addr_p+1		; now addr_p = $DD00
-	JSR	write_inline_string
-	.BYTE	ITOK_XY 1,24
-	.BYTE	"CIA2 ",0
+	TITLE	1,24,"CIA2 "	
 	JSR	tod_update_screen
 	RTS
 
@@ -472,8 +464,9 @@ update_hwid_screen:
 	RTS
 
 
+
 ; Gets max scanline number in A (low byte only!)
-get_scanlines:
+get_scanlines_vic2:
 	PHX
 	; if RST8 is set, wait till it's gone
 :	BIT	$D011
@@ -492,12 +485,49 @@ get_scanlines:
 	RTS
 
 
-get_bram:
+get_scanlines_vic4:
+	; wait for start of new frame (physical raster of zero)
+:	LDA	$D053
+	AND	#7
+	BNE	:-
+	; wait for high bits of phys raster is non-zero now
+:	LDA	$D053
+	AND	#7
+	BEQ	:-
+	; OK, now wait for high bits changes to zero again and store the last low bits when h.bits were non-zero
+	; which should be then the max phys raster count
+:	LDA	$D053
+	AND	#7
+	BEQ	:+
+	STA	@hi_candidate
+	LDA	$D052
+	STA	@lo_candidate
+	LDA	$D053
+	AND	#7
+	CMP	@hi_candidate
+	BNE	:-
+	@lo_candidate = * + 1
+	LDA	#0
+	STA	@lo_result
+	@hi_candidate = * + 1
+	LDA	#0
+	STA	@hi_result
+	BRA	:-
+	; End
+:	@lo_result = * + 1
+	LDA	#0
+	@hi_result = * + 1
+	LDX	#0
+	RTS
+
+
+
+get_bram_size:
 	LDA	#$FF
 	STA	addr_p
 	LDA	#$03
 	STA	addr_p+1
-	LDA	#$02
+	LDA	#$04
 	STA	addr_p+2
 	LDA	#$00
 	STA	addr_p+3
@@ -528,6 +558,65 @@ get_bram:
 	LDA	num
 	LDX	num+1
 	RTS
+
+
+update_rom_screen:
+	LDA	#$00
+	STA	addr_p
+	STA	addr_p+1
+	LDA	addr_p+3
+	LDA	#2
+	STA	addr_p+2
+	; Test ROM write protection
+	LDZ	#$16
+	WRISTR	"R/"
+	LDA32Z	addr_p
+	INA
+	STA32Z	addr_p
+	CMP32Z	addr_p
+	PHP
+	DEA
+	STA32Z	addr_p
+	LDA	#'W'
+	PLP
+	BEQ	:+
+	LDA	#'O'
+:	JSR	write_char
+	; Test if ROM has the "version signature" typical for C65 ROMs
+	LDA32Z	addr_p
+	CMP	#'V'
+	BNE	@no_c65_rom
+	INZ
+:	LDA32Z	addr_p
+	INZ
+	CMP	#'0'
+	BCC	@no_c65_rom
+	CMP	#'9'+1
+	BCS	@no_c65_rom
+	CPZ	#$16 + 7
+	BNE	:-
+	WRISTR	" C65 "
+	LDZ	#$16
+:	LDA32Z	addr_p
+	JSR	write_char
+	INZ
+	CPZ	#$16+7
+	BNE	:-
+	RTS
+@no_c65_rom:
+	WRISTR	" non-C65"
+	RTS
+
+
+test_cram:
+	RTS
+	LDZ	#0
+	STZ	colour_pos_addr
+	STZ	colour_pos_addr+1
+	TZA
+	STA32Z	colour_pos_addr
+;	LDA	
+
 
 
 clear_screen:
@@ -564,9 +653,6 @@ home:
 
 
 
-not_a_mega65:
-	RTS
-
 
 main:
 	; Enable MEGA65 VIC-IV I/O mode
@@ -576,15 +662,27 @@ main:
 	STA	$D02F
 	; Check if it's really a MEGA65, also queries HDOS version number
 	LDA	#0	; HDOS call number as input
-	HDOSCALL	; if it's really a MEGA65, A register will be modifed!
-	CMP	#0
-	BEQ	not_a_mega65
+	TAX
+	TAY
+	HDOSCALL	; if it's really a MEGA65, registers will be modifed!
+	CMP	#0	; check those (but not Z, as if it's a C64, it does not exist)
+	BNE	@mega65
+	CPX	#0
+	BNE	@mega65
+	CPY	#0
+	BNE	@mega65
+	; Not a MEGA65
+	RTS
+@mega65:
 	STX	os_version	; OS Version, X=lob
 	STA	os_version+1	; OS Version, A=hib
 	STZ	os_version+2	; DOS Version, Z=lob
 	STY	os_version+3	; DOS Version, Y=hib
 	; It's important to disable interrupts!
 	SEI
+	; MEGA65 FAST mode
+	LDA	#65
+	STA	0
 	; Setup VIC II/III stuffs
 	LDA	#0
 	STA	$D015
@@ -604,29 +702,13 @@ main:
 	STA	1		; make chrgen visible @ $D000, we copy charset from there
 	LDX 	#0
 @mangle_charset:
-        ; ***
-        ;LDY     #$E8            ; we use the SECOND 2K of CHR-WOM! So in case of reset, M65 will not display garbage, as it uses the first charset (uppercase+gfx)
-        ;STY     addr_p+1
         LDA     #$FF
-        ;STA32Z  addr_p         ; well, that's only for making sure chars 0-31 are "blank" to catch problems, etc?
-	STA	$F800,X
-        ; ***
-        ;INY
-        ;STY     addr_p+1
+	STA	$F800,X		; well, that's only for making sure chars 0-31 are "blank" to catch problems, etc?
         LDA     $D000+32*8,X
-        ;STA32Z  addr_p
 	STA	$F900,X
-        ; ***
-        ;INY
-        ;STY     addr_p+1
         LDA     $D000,X
-        ;STA32Z  addr_p
 	STA	$FA00,X
-        ; ***
-        ;INY
-        ;STY     addr_p+1
         LDA     $D800,X
-        ;STA32Z  addr_p
 	STA	$FB00,X
         INX
         BNE     @mangle_charset
@@ -639,36 +721,45 @@ main:
 	STA	colour_pos_addr+3
 	LDA	#$F8
 	STA	colour_pos_addr+2
-	;JSR	setup_screen
-	; Print initial msg also the first thing needs to be initialize position and colour!!!!
-	;.BYTE	"LGB"
+	; OK, if we are here at least, it's a better time to test colour RAM, we want later not to mess up (also for the pointers ...)
+	JSR	test_cram
+	; init
 	JSR	clear_screen
 	JSR	write_inline_string
 	.BYTE	ITOK_XY 0,0
-	.BYTE	ITOK_COLOUR 2
 	.BYTE	" MEGA65info v0.1 (C)2020 LGB"
 	.BYTE	0
 	JSR	home
-	LDA	#$FF
+	LDA	#BANNER_COLOUR
 	LDZ	#79
 :	STA32Z	colour_pos_addr
 	DEZ
 	BPL	:-
-	JSR	write_inline_string
-	.BYTE	ITOK_XY 1,2
-	.BYTE	"HW   ",0
-	JSR	update_hwid_screen
 
-	JSR	write_inline_string
-	.BYTE	ITOK_XY 1,3
-	.BYTE	"VER  OS ",0
+	TITLE	1,2,"HW   "
+	JSR	update_hwid_screen
+	STITLE	"  FPGA "
+	LDX	#3
+:	LDA	$D632,X
+	JSR	write_hex_byte
+	DEX
+	BPL	:-
+	STITLE	"  CPLD "
+	LDX	#3
+:	LDA	$D62C,X
+	JSR	write_hex_byte
+	DEX
+	BPL	:-
+
+	TITLE	1,3,"VER  "
+	STITLE	"OS "
 	LDA	os_version+1
 	JSR	write_dec_byte
 	LDA	#'.'
 	JSR	write_char
 	LDA	os_version
 	JSR	write_dec_byte
-	WRISTR	" DOS "
+	STITLE	" DOS "
 	LDA	os_version+3
 	JSR	write_dec_byte
 	LDA	#'.'
@@ -676,19 +767,56 @@ main:
 	LDA	os_version+2
 	JSR	write_dec_byte
 
-	JSR	write_inline_string
-	.BYTE	ITOK_XY 1,4
-	.BYTE	"VID  ",0
-	JSR	get_scanlines
+	TITLE	1,4,"SCAN "
+	JSR	get_scanlines_vic2
 	LDX	#1	; high byte
 	JSR	write_dec_word
-
-	JSR	write_inline_string
-	.BYTE	ITOK_XY 1,5
-	.BYTE	"BRAM ",0
-	JSR	get_bram
+	STITLE	" phys: "
+	JSR	get_scanlines_vic4
 	JSR	write_dec_word
-	
+	;
+	; *** FPGA BRAM ***
+	;
+	TITLE	1,5,"BRAM "
+	JSR	get_bram_size
+	JSR	write_dec_word
+	LDA	#'K'
+	JSR	write_char
+	;
+	; *** ROM ***
+	;
+	TITLE	1,6,"ROM  "
+	JSR	update_rom_screen
+	;
+	; *** UUID ***
+	;
+	TITLE	1,7,"UUID "
+	LDA	#$71
+	JSR	addr_to_i2c
+	LDZ	#0
+:	JSR	Lpeek_debounced
+	JSR	write_hex_byte
+	INZ
+	CPZ	#8
+	BNE	:-
+	;
+	; *** MAC ***
+	;
+	TITLE	1,8,"MAC  "
+	LDX	#0
+:	LDA	$D6E9,X
+	JSR	write_hex_byte
+	LDA	#':'
+	JSR	write_char
+	INX
+	CPX	#5
+	BNE	:-
+	LDA	$D6EE
+	JSR	write_hex_byte
+
+	LDA	#0
+	STA	glitch_counter
+	STA	glitch_counter+1
 @loop:
 	JSR	update_clocks_screen
 	BRA	@loop
