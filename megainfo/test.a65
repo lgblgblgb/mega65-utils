@@ -85,6 +85,10 @@ string_p:		.RES 2
 glitch_counter:		.RES 2
 num:			.RES 2
 dump_start_p:		.RES 4
+rtc_seconds:		.REs 1
+rtc_seconds_old:	.RES 1
+refresh_rate:		.RES 1
+refresh_rate_temp:	.RES 1
 
 .SEGMENT "CODE"
 
@@ -413,6 +417,7 @@ rtc_update_screen:
 	JSR	write_blinking_colon
 	DEZ				; secs
 	JSR	Lpeek_debounced
+	STA	rtc_seconds
 	JSR	write_hex_byte
 		LDX	#'R'
 		JSR	update_second_bar
@@ -935,7 +940,7 @@ hex_dump_mode:
 	BEQ	@waitkey
 	STA	$D610
 	CMP	#'m'
-	LBEQ	@return
+	BEQ	@return
 	CMP	#'0'
 	BCC	:+
 	CMP	#'9'+1
@@ -959,7 +964,8 @@ hex_dump_mode:
 	CMP	#$1D		; cursor right
 	BEQ	@cursor_right
 	BRA	@waitkey
-
+@return:
+	RTS
 @cursor_left:
 	LDA	#0
 	LDX	#.LOBYTE(-$1)
@@ -1029,8 +1035,6 @@ hex_dump_mode:
 	DEX
 	BNE	:-
 	JMP	@dump
-@return:
-	RTS
 
 
 
@@ -1041,8 +1045,30 @@ nmi_counter:	.BYTE	0
 nmi_handler:
 	INC	nmi_counter
 	RTI
+
 irq_handler:
+	PHA
+	; Check if IRQ source was VIC, if so, use it for scan frequency measurement puproses
+	ASL	$D019	; Acknowledge VIC interrupt [ah-ahh, R-M-W opcode ....]
+	LDA	rtc_seconds
+	CMP	rtc_seconds_old
+	BEQ	@same_second
+	; Not the same second!
+	STA	rtc_seconds_old
+	LDA	refresh_rate_temp
+	STA	refresh_rate
+	LDA	#1
+	STA	refresh_rate_temp
+	BRA	@eoi
+@same_second:
+	INC	refresh_rate_temp
+	BRA	@eoi
+@cia_irq:
+	; Otherwise assume it's CIA, irq_counter is printed for that at the bottom
 	INC	irq_counter
+	; Acknowledge CIA interrupt
+@eoi:
+	PLA
 	RTI
 
 
@@ -1082,6 +1108,10 @@ main:
 	STA	$FFFA
 	LDA	#.HIBYTE(nmi_handler)
 	STA	$FFFB
+	LDA	#.LOBYTE(irq_handler)
+	STA	$FFFE
+	LDA	#.HIBYTE(irq_handler)
+	STA	$FFFF
 	; Setup VIC II/III stuffs
 	LDA	#0
 	STA	$D015
@@ -1128,6 +1158,14 @@ main:
 	BNE	:-
 
 @main_screen_start:
+	LDA	#%01111111
+	STA	$DC0D		; turn off CIA1 IRQs
+	AND	$D011
+	STA	$D011		; turn off MSB of VIC raster compare
+	STA	$D012		; low byte of raster compare (does not matter for us too much, which raster it is)
+	LDA	#1
+	STA	$D01A		; Enable VIC IRQs
+
 	JSR	clear_screen_with_logo
 	JSR	write_inline_string
 	.BYTE	ITOK_COLOUR LEGEND_COLOUR
@@ -1274,6 +1312,19 @@ main:
 	STA	glitch_counter+1
 @kbd_loop:
 	JSR	update_clocks_screen
+	CLI	; enable interrupts!!!!
+	LDA	refresh_rate
+	CMP	#45
+	BCC	@invalid
+	CMP	#65+1
+	BCS	@invalid
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 19,5
+	.BYTE	"@ "
+	.BYTE	0
+	JSR	write_dec_byte
+	WRISTR	"Hz  "
+@invalid:
 	LDA	$D610
 	BEQ	@kbd_loop
 	STA	$D610

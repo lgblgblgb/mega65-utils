@@ -16,3 +16,8 @@ Must be started on MEGA65 from C64 mode (GO64 first)!
 * test refresh rate (do not assume, but test) append to the "SCAN" information
 * add various VIC-IV (and maybe VIC-III as well) test screens etc as options
 * tests involving the SDcard
+* Ethernet tests
+* HyperRAM detection and tests
+* Maybe: audio tests (audio DMA and OPL3 as well?)
+* Colour RAM size test (32K or 64K)
+* Offer "popular" locations in hexdump mode so user does not need to know addresses for everything
