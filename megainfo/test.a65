@@ -1,14 +1,48 @@
+; -------------------------------------------------------------------------------
+;
+; MEGA65info - a small utility to get information / simple query tools for MEGA65
+;
+; Copyright (C)2020 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+;
+; -------------------------------------------------------------------------------
+;
+; This program is free software; you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation; either version 3 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program.  If not, see <http://www.gnu.org/licenses/>.
+;
+; -------------------------------------------------------------------------------
+
 .SETCPU "4510"
 
 LOAD_ADDR	= $801
 VID_MEM_PAGE	= $F0
-;COL_MEM_PAGE	= $D8
-COLS		= 80
+COLS		= 80	; Do NOT change this, it will break everything, even if you would like to use 40 columns instead :)
 
-TITLE_COLOUR	= 2
-SUBTITLE_COLOUR	= 4
-TEXT_COLOUR	= 3
-BANNER_COLOUR	= $2D
+SEC_BAR_P	= VID_MEM_PAGE * $100 + 24 * COLS + COLS/2 - 30
+SEC_BAR_CHAR	= '.'
+
+; Hint: most colours must be 0-15 value here.
+; Unless, if you see two digit hex values, then it's valid for THAT kind of setting ONLY, and high nybble is C65 attribute mode interpreted.
+
+TITLE_COLOUR		= $A
+SUBTITLE_COLOUR		= $7
+TEXT_COLOUR		= $1
+BANNER_COLOUR		= $2D
+BCOLON_COLOUR		= $1C
+LEGEND_COLOUR		= $C
+HEXDUMP_ADDR_COLOUR	= $8
+HEXDUMP_BYTE_COLOUR	= TEXT_COLOUR
+HEXDUMP_CHAR_COLOUR	= $E
+DEFAULT_CRAM_COLOUR	= LEGEND_COLOUR
 
 
 .MACRO	STA32Z	zploc
@@ -34,6 +68,9 @@ BANNER_COLOUR	= $2D
 	.ORG $C000
 
 os_version:		.RES 4
+hex_buf:		.RES 16
+nvram:			.RES 64
+xemu_id:		.RES 1
 
 
 .SEGMENT "ZEROPAGE"
@@ -47,6 +84,7 @@ colour:			.RES 1
 string_p:		.RES 2
 glitch_counter:		.RES 2
 num:			.RES 2
+dump_start_p:		.RES 4
 
 .SEGMENT "CODE"
 
@@ -72,6 +110,44 @@ num:			.RES 2
 lastline:
 	.WORD	0
 .ENDSCOPE
+
+fpga_xemu_const: .BYTE 'X','e','m','u'
+cpld_xemu_const: .BYTE 'N','o','w','!'
+
+
+bcd2bin:
+	PHA
+	AND	#$0F
+	STA	@result
+	PLA
+	AND	#$F0
+	PHA
+	LSR	A
+	CLC
+	@result = * + 1
+	ADC	#0
+	STA	@result
+	PLA
+	LSR	A
+	LSR	A
+	LSR	A
+	CLC
+	ADC	@result
+	RTS
+
+
+
+skip:
+	PHA
+	CLC
+	ADC	screen_pos_addr
+	STA	screen_pos_addr
+	STA	colour_pos_addr
+	BCC	:+
+	INC	screen_pos_addr + 1
+	INC	colour_pos_addr + 1
+:	PLA
+	RTS
 
 
 write_hex_byte:
@@ -235,8 +311,18 @@ write_space:
 .DEFINE ITOK_COLOUR(n)	(n)+16
 
 
-
-
+write_blinking_colon:
+	PHA
+	LDA	colour
+	PHA
+	LDA	#BCOLON_COLOUR
+	STA	colour
+	LDA	#':'
+	JSR	write_char
+	PLA
+	STA	colour
+	PLA
+	RTS
 
 
 write_inline_string:
@@ -264,8 +350,6 @@ write_inline_string:
 	LDA	#0
         JMP     (string_p)
 @colour:
-	;INW	string_p
-	;LDA	(string_p),Z
 	AND	#$F
 	STA	colour
 	BRA	@loop
@@ -322,16 +406,16 @@ rtc_update_screen:
 	LDZ	#$12			; Hours
 	JSR	Lpeek_debounced
 	JSR	write_hex_byte
-	LDA	#':'
-	JSR	write_char
+	JSR	write_blinking_colon
 	DEZ				; mins
 	JSR	Lpeek_debounced
 	JSR	write_hex_byte
-	LDA	#':'
-	JSR	write_char
+	JSR	write_blinking_colon
 	DEZ				; secs
 	JSR	Lpeek_debounced
 	JSR	write_hex_byte
+		LDX	#'R'
+		JSR	update_second_bar
 	JSR	write_space
 	LDZ	#$15			; year
 	JSR	Lpeek_debounced
@@ -346,12 +430,32 @@ rtc_update_screen:
 	DEZ				; day
 	JSR	Lpeek_debounced
 	JSR	write_hex_byte
-	WRISTR	" I2C-glitch=$"		; show glitch counter (as hex num)
+	STITLE	" I2C-glitch:"		; show glitch counter (as hex num)
 	LDA	glitch_counter+1
 	JSR	write_hex_byte
 	LDA	glitch_counter
 	JMP	write_hex_byte
-	
+
+; Input A = BCD value of seconds
+;       X = char to use
+update_second_bar:
+	STX	@char
+	JSR	bcd2bin
+		PHA
+		LDX	#59
+	:	LDA	SEC_BAR_P,X
+		@char = * + 1
+		CMP	#0
+		BNE	:+
+		LDA	#SEC_BAR_CHAR
+		STA	SEC_BAR_P,X
+	:	DEX
+		BPL	:--
+		PLX
+	LDA	@char
+	STA	SEC_BAR_P,X
+	RTS
+
 
 ; !!!! Routine excepts first two bytes of addr_p being to set already to DC00 or DD00 values!
 tod_update_screen:
@@ -361,16 +465,24 @@ tod_update_screen:
 	TAX			; store for later AM/PM handling
 	AND	#255-128-64	
 	JSR	write_hex_byte
-	LDA	#':'
-	JSR	write_char
+	JSR	write_blinking_colon
 	DEY				; mins
 	LDA	(addr_p),Y
 	JSR	write_hex_byte
-	LDA	#':'
-	JSR	write_char
+	JSR	write_blinking_colon
 	DEY				; secs
 	LDA	(addr_p),Y
 	JSR	write_hex_byte
+		PHX
+		PHA
+		LDA	addr_p+1	; from CIA I/O address hi byte DC/DD form chars '1' or '2' for the second bar
+		AND	#1
+		CLC
+		ADC	#'1'
+		TAX
+		PLA
+		JSR	update_second_bar
+		PLX
 	LDA	#'.'
 	JSR	write_char
 	DEY				; 10th of secs
@@ -383,34 +495,43 @@ tod_update_screen:
 	LDY	#'P'
 :	TYA
 	JSR	write_char
-	WRISTR	"M  Ta="
+	LDA	#'M'
+	JSR	write_char
+	STITLE	"  Ta:"
 	LDA	#5
 	LDA	(addr_p),Y
 	JSR	write_hex_byte
 	DEY
 	LDA	(addr_p),Y
 	JSR	write_hex_byte
-	WRISTR	" Tb="
+	STITLE	" Tb:"
 	LDY	#7
 	LDA	(addr_p),Y
 	JSR	write_hex_byte
 	DEY
 	LDA	(addr_p),Y
 	JSR	write_hex_byte
+	; interrupt counter
+	STITLE	" INT:"
+	LDA	addr_p+1
+	AND	#1
+	TAX
+	LDA	irq_counter,X
+	JSR	write_hex_byte
 	RTS
 
 
 update_clocks_screen:
-	TITLE	1,22,"RTC  "
+	TITLE	1,21,"RTC  "
 	JSR	rtc_update_screen
 	LDA	#$00
 	STA	addr_p
 	LDA	#$DC
 	STA	addr_p+1		; now addr_p = $DC00
-	TITLE	1,23,"CIA1 "
+	TITLE	1,22,"CIA1 "
 	JSR	tod_update_screen
 	INC	addr_p+1		; now addr_p = $DD00
-	TITLE	1,24,"CIA2 "	
+	TITLE	1,23,"CIA2 "
 	JSR	tod_update_screen
 	RTS
 
@@ -626,7 +747,7 @@ clear_screen:
 	PHZ
 	LDZ	#0
 	LDX	#8
-:	LDA	#0
+:	LDA	#DEFAULT_CRAM_COLOUR
 	STA32Z	colour_pos_addr
 	LDA	#32
 	STA	(screen_pos_addr),Z
@@ -651,7 +772,278 @@ home:
 	PLA
 	RTS
 
+clear_screen_with_logo:
+	JSR	clear_screen
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 1,0
+	.BYTE	"MEGA65info v0.0.1"
+	.BYTE	ITOK_XY 55,0
+	.BYTE	"(C)2020 LGB Gabor Lenart"
+	.BYTE	ITOK_COLOUR TEXT_COLOUR
+	.BYTE	0
+	LDA	#BANNER_COLOUR
+	LDX	#79
+:	STA	$D800,X
+	DEX
+	BPL	:-
+	RTS
 
+
+hex_dump:
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 12,2
+	.BYTE	ITOK_COLOUR LEGEND_COLOUR
+	.BYTE	0
+	LDY	addr_p
+	LDX	#16
+@header_loop_1:
+	LDA	#'.'
+	JSR	write_char
+	TYA
+	JSR	write_hex_nybble
+	LDA	#1
+	JSR	skip
+	INY
+	DEX
+	BNE	@header_loop_1
+	LDA	#2
+	JSR	skip
+	LDY	addr_p
+	LDX	#16
+@header_loop_2:
+	TYA
+	JSR	write_hex_nybble
+	INY
+	DEX
+	BNE	@header_loop_2
+
+	JSR	write_inline_string
+	.BYTE	ITOK_XY 1,3
+	.BYTE	0
+	LDZ	#0
+	LDY	#16
+@within_screen:
+	LDA	#HEXDUMP_ADDR_COLOUR
+	STA	colour
+	LDA	#'.'
+	JSR	write_char
+	LDA	addr_p+3
+	AND	#$0F
+	STA	addr_p+3
+	JSR	write_hex_nybble
+	LDA	addr_p+2
+	JSR	write_hex_byte
+	LDA	addr_p+1
+	JSR	write_hex_byte
+	LDA	addr_p
+	JSR	write_hex_byte
+	LDA	#HEXDUMP_BYTE_COLOUR
+	STA	colour
+	LDA	#3
+	JSR	skip
+	LDX	#0
+@hex_part:
+	LDA32Z	addr_p
+	STA	hex_buf,X
+	INW	addr_p
+	BNE	:+
+	INW	addr_p+2
+:	JSR	write_hex_byte
+	LDA	#' '
+;	CPX	#7
+;	BNE	:+
+;	LDA	#'-'
+	JSR	write_char
+	INX
+	CPX	#16
+	BNE	@hex_part
+	LDA	#3-1
+	JSR	skip
+	LDA	#HEXDUMP_CHAR_COLOUR
+	STA	colour
+	LDX	#0
+@text_part:
+	LDA	hex_buf,X
+	CMP	#32
+	BCC	@not_ascii
+	CMP	#96
+	BCC	@ascii
+@not_ascii:
+	LDA	#'.'
+@ascii:
+	JSR	write_char
+	INX
+	CPX	#16
+	BNE	@text_part
+	LDA	#COLS-(8+(16*3)-1+16+3+3)
+	JSR	skip
+	DEY
+	BNE	@within_screen
+	LDA	#TEXT_COLOUR
+	STA	colour
+	RTS
+
+.SCOPE	const_addr_tab
+	head:
+	zero:	.DWORD	0
+	io:	.DWORD	$FFD3000
+.ENDSCOPE
+
+.MACRO	SET_HEXDUMP_ADDR_FROM_CONST n
+	LDX	#const_addr_tab::n - const_addr_tab::head
+	JSR	set_hex_dump_addr
+.ENDMACRO
+
+set_hex_dump_addr:
+	PHA
+	PHX
+	PHY
+	LDY	#0
+:	LDA	const_addr_tab::head,X
+	STA	dump_start_p,Y
+	INX
+	INY
+	CPY	#4
+	BNE	:-
+	PLY
+	PLX
+	PLA
+	RTS
+
+
+
+hex_dump_mode:
+	JSR	clear_screen_with_logo
+	JSR	write_inline_string
+	.BYTE	ITOK_COLOUR LEGEND_COLOUR
+	.BYTE	ITOK_XY 1,21
+	.BYTE	"Linear (not CPU) addresses! Text info is ASCII (32-96) based!"
+	.BYTE	ITOK_XY 1,23
+	.BYTE	"Cursor up/down = scroll by lines, left/down = scroll by pages"
+	.BYTE	ITOK_XY 1,24
+	.BYTE	"m = main screen, 0-9,a-f = set address, DEL = delete last digit of address"
+	.BYTE	0
+@dump:
+	LDX	#3
+:	LDA	dump_start_p,X
+	STA	addr_p,X
+	DEX
+	BPL	:-
+	JSR	hex_dump
+@waitkey:
+	LDA	$D610
+	BEQ	@waitkey
+	STA	$D610
+	CMP	#'m'
+	LBEQ	@return
+	CMP	#'0'
+	BCC	:+
+	CMP	#'9'+1
+	BCC	@digit_0_to_9
+:	CMP	#'a'
+	BCC	:+
+	CMP	#'f'+1
+	BCC	@digit_a_to_f
+:	CMP	#'A'
+	BCC	:+
+	CMP	#'F'+1
+	BCC	@digit_a_to_f
+:	CMP	#$14		; "DEL" key
+	BEQ	@input_addr_backspace
+	CMP	#$91		; cursor up
+	BEQ	@cursor_up
+	CMP	#$11		; cursor down
+	BEQ	@cursor_down
+	CMP	#$9D		; cursor left
+	BEQ	@cursor_left
+	CMP	#$1D		; cursor right
+	BEQ	@cursor_right
+	BRA	@waitkey
+
+@cursor_left:
+	LDA	#0
+	LDX	#.LOBYTE(-$1)
+	LDY	#$FF
+	BRA	@scroll
+@cursor_right:
+	LDA	#0
+	LDX	#$1
+	TAY
+	BRA	@scroll
+@cursor_up:
+	LDA	#.LOBYTE(-$10)
+	LDX	#$FF
+	LDY	#$FF
+	BRA	@scroll
+@cursor_down:
+	LDA	#$10
+	LDX	#0
+	LDY	#0
+	BRA	@scroll
+	; A = low byte of addition
+	; X = hi byte of addition
+	; Y = sign extension: $FF/$00
+@scroll:
+	CLC
+	ADC	dump_start_p
+	STA	dump_start_p
+	TXA
+	ADC	dump_start_p+1
+	STA	dump_start_p+1
+	TYA
+	ADC	dump_start_p+2
+	STA	dump_start_p+2
+	TYA
+	ADC	dump_start_p+3
+	STA	dump_start_p+3
+	BRA	@dump
+
+@digit_a_to_f:
+	AND	#$F
+	CLC
+	ADC	#9
+	BRA	@input_addr
+@digit_0_to_9:
+	SEC
+	SBC	#'0'
+	; fall-through
+@input_addr:
+	LDX	#4
+:	CLC
+	ROL	dump_start_p+0
+	ROL	dump_start_p+1
+	ROL	dump_start_p+2
+	ROL	dump_start_p+3
+	DEX
+	BNE	:-
+	ORA	dump_start_p
+	STA	dump_start_p
+	JMP	@dump
+@input_addr_backspace:
+	LDX	#4
+:	CLC
+	ROR	dump_start_p+3
+	ROR	dump_start_p+2
+	ROR	dump_start_p+1
+	ROR	dump_start_p+0
+	DEX
+	BNE	:-
+	JMP	@dump
+@return:
+	RTS
+
+
+
+; Do not modify this order of the counters, or do not put anything between them!
+irq_counter:	.BYTE	0
+nmi_counter:	.BYTE	0
+
+nmi_handler:
+	INC	nmi_counter
+	RTI
+irq_handler:
+	INC	irq_counter
+	RTI
 
 
 main:
@@ -680,9 +1072,16 @@ main:
 	STY	os_version+3	; DOS Version, Y=hib
 	; It's important to disable interrupts!
 	SEI
+	; Set initial hexdump addr for hexdump mode
+	SET_HEXDUMP_ADDR_FROM_CONST zero
 	; MEGA65 FAST mode
 	LDA	#65
 	STA	0
+	; Set NMI handler (user may hit RESTORE). It "write through" the ROM, no problem.
+	LDA	#.LOBYTE(nmi_handler)
+	STA	$FFFA
+	LDA	#.HIBYTE(nmi_handler)
+	STA	$FFFB
 	; Setup VIC II/III stuffs
 	LDA	#0
 	STA	$D015
@@ -723,43 +1122,92 @@ main:
 	STA	colour_pos_addr+2
 	; OK, if we are here at least, it's a better time to test colour RAM, we want later not to mess up (also for the pointers ...)
 	JSR	test_cram
-	; init
-	JSR	clear_screen
-	JSR	write_inline_string
-	.BYTE	ITOK_XY 0,0
-	.BYTE	" MEGA65info v0.1 (C)2020 LGB"
-	.BYTE	0
-	JSR	home
-	LDA	#BANNER_COLOUR
-	LDZ	#79
-:	STA32Z	colour_pos_addr
-	DEZ
-	BPL	:-
+	; Empty hardware accelerated kbd scanner queue
+:	LDA	$D610
+	STA	$D610
+	BNE	:-
 
+@main_screen_start:
+	JSR	clear_screen_with_logo
+	JSR	write_inline_string
+	.BYTE	ITOK_COLOUR LEGEND_COLOUR
+	.BYTE	ITOK_XY	60,5
+	.BYTE	"= MENU ="
+	.BYTE	ITOK_XY 60,7
+	.BYTE	"h = hexdump"
+	.BYTE	ITOK_XY 60,8
+	.BYTE	"x = exit"
+	.BYTE	0
+	;
+	; *** HW version info ***
+	;
+	LDA	#0
+	STA	xemu_id
 	TITLE	1,2,"HW   "
 	JSR	update_hwid_screen
-	STITLE	"  FPGA "
+	STITLE	" FPGA:"
 	LDX	#3
 :	LDA	$D632,X
 	JSR	write_hex_byte
-	DEX
-	BPL	:-
-	STITLE	"  CPLD "
+	CMP	fpga_xemu_const,X
+	BNE	:+
+	INC	xemu_id
+:	DEX
+	BPL	:--
+	STITLE	" CPLD:"
 	LDX	#3
 :	LDA	$D62C,X
 	JSR	write_hex_byte
-	DEX
-	BPL	:-
-
-	TITLE	1,3,"VER  "
-	STITLE	"OS "
+	CMP	cpld_xemu_const,X
+	BNE	:+
+	INC	xemu_id
+:	DEX
+	BPL	:--
+	;
+	; *** Is emulator? ***
+	;
+	TITLE	1,3,"XEMU "
+	LDA	xemu_id
+	CMP	#8
+	BNE	@not_xemu
+	; it is Xemu, try to query exact version number
+	STITLE	"yes:"
+	LDX	#0
+:	LDA	$D632,X
+	EOR	$D62C,X
+	STA	$D632,X
+	INX
+	CPX	#4
+	BNE	:-
+	LDX	#0
+:	LDA	$D632
+	CMP	$D62C
+	BNE	@error_xemu
+	CMP	#0
+	BEQ	@was_xemu
+	JSR	write_char
+	INX
+	CPX	#40
+	BEQ	@error_xemu
+	BRA	:-
+@error_xemu:
+	STITLE	" ERROR"
+	BRA	@was_xemu
+@not_xemu:
+	WRISTR	"no"
+@was_xemu:
+	;
+	; *** HYPPO version trap result ***
+	;
+	TITLE	1,4,"VER  "
+	STITLE	"OS:"
 	LDA	os_version+1
 	JSR	write_dec_byte
 	LDA	#'.'
 	JSR	write_char
 	LDA	os_version
 	JSR	write_dec_byte
-	STITLE	" DOS "
+	STITLE	" DOS:"
 	LDA	os_version+3
 	JSR	write_dec_byte
 	LDA	#'.'
@@ -767,17 +1215,17 @@ main:
 	LDA	os_version+2
 	JSR	write_dec_byte
 
-	TITLE	1,4,"SCAN "
+	TITLE	1,5,"SCAN "
 	JSR	get_scanlines_vic2
 	LDX	#1	; high byte
 	JSR	write_dec_word
-	STITLE	" phys: "
+	STITLE	" phys:"
 	JSR	get_scanlines_vic4
 	JSR	write_dec_word
 	;
 	; *** FPGA BRAM ***
 	;
-	TITLE	1,5,"BRAM "
+	TITLE	1,6,"BRAM "
 	JSR	get_bram_size
 	JSR	write_dec_word
 	LDA	#'K'
@@ -785,12 +1233,12 @@ main:
 	;
 	; *** ROM ***
 	;
-	TITLE	1,6,"ROM  "
+	TITLE	1,7,"ROM  "
 	JSR	update_rom_screen
 	;
 	; *** UUID ***
 	;
-	TITLE	1,7,"UUID "
+	TITLE	1,8,"UUID "
 	LDA	#$71
 	JSR	addr_to_i2c
 	LDZ	#0
@@ -802,7 +1250,7 @@ main:
 	;
 	; *** MAC ***
 	;
-	TITLE	1,8,"MAC  "
+	TITLE	1,9,"MAC  "
 	LDX	#0
 :	LDA	$D6E9,X
 	JSR	write_hex_byte
@@ -813,13 +1261,39 @@ main:
 	BNE	:-
 	LDA	$D6EE
 	JSR	write_hex_byte
-
+	;
+	; *** KEEP TIMING STUFF, AND KBD HANDLING ***
+	;
+	LDA	#SEC_BAR_CHAR
+	LDX	#59
+:	STA	SEC_BAR_P,X
+	DEX
+	BPL	:-
 	LDA	#0
 	STA	glitch_counter
 	STA	glitch_counter+1
-@loop:
+@kbd_loop:
 	JSR	update_clocks_screen
-	BRA	@loop
+	LDA	$D610
+	BEQ	@kbd_loop
+	STA	$D610
+	;			JSR	write_inline_string
+	;			.BYTE	ITOK_XY 78,0
+	;			.BYTE	0
+	;			JSR	write_hex_byte
+	CMP	#'h'
+	BEQ	@hex_dump_mode
+	CMP	#'x'
+	BEQ	@quit
+	BRA	@kbd_loop
 	RTS
-
-
+@hex_dump_mode:
+	JSR	hex_dump_mode
+	JMP	@main_screen_start
+@quit:
+	SEI
+	LDA	#64
+	STA	0
+	LDA	#7
+	STA	1
+	JMP	($FFFC)
