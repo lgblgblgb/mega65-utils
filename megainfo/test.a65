@@ -921,23 +921,32 @@ hex_dump_mode:
 	JSR	clear_screen_with_logo
 	JSR	write_inline_string
 	.BYTE	ITOK_COLOUR LEGEND_COLOUR
-	.BYTE	ITOK_XY 1,21
+	.BYTE	ITOK_XY 1,20
 	.BYTE	"Linear (not CPU) addresses! Text info is ASCII (32-96) based!"
-	.BYTE	ITOK_XY 1,23
+	.BYTE	ITOK_XY 1,22
 	.BYTE	"Cursor up/down = scroll by lines, left/down = scroll by pages"
-	.BYTE	ITOK_XY 1,24
+	.BYTE	ITOK_XY 1,23
 	.BYTE	"m = main screen, 0-9,a-f = set address, DEL = delete last digit of address"
+	.BYTE	ITOK_XY 1,24
+	.BYTE	"F1 = I/O space"
 	.BYTE	0
+	; Yes, I re-render hexdump on wait-key loop. This causes that even changing memory content
+	; can be seen changing, for real. At 40Mhz, it's not so much a performance problem noticable. :)
 @dump:
+@waitkey:
 	LDX	#3
 :	LDA	dump_start_p,X
 	STA	addr_p,X
 	DEX
 	BPL	:-
 	JSR	hex_dump
-@waitkey:
+;@waitkey:
 	LDA	$D610
 	BEQ	@waitkey
+		;JSR	write_inline_string
+		;.BYTE	ITOK_XY 0,1
+		;.BYTE	0
+		;JSR	write_hex_byte
 	STA	$D610
 	CMP	#'m'
 	BEQ	@return
@@ -963,9 +972,14 @@ hex_dump_mode:
 	BEQ	@cursor_left
 	CMP	#$1D		; cursor right
 	BEQ	@cursor_right
+	CMP	#$F1		; F1
+	BEQ	@f1
 	BRA	@waitkey
 @return:
 	RTS
+@f1:
+	SET_HEXDUMP_ADDR_FROM_CONST io
+	BRA	@dump
 @cursor_left:
 	LDA	#0
 	LDX	#.LOBYTE(-$1)
@@ -1002,7 +1016,7 @@ hex_dump_mode:
 	TYA
 	ADC	dump_start_p+3
 	STA	dump_start_p+3
-	BRA	@dump
+	JMP	@dump
 
 @digit_a_to_f:
 	AND	#$F
