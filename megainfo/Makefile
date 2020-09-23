@@ -14,6 +14,7 @@ clean:
 
 publish: test.prg
 	cp $< bin/mega65info.prg
+	git add bin/mega65info.prg
 
 .PHONY: all xemu m65 clean publish
 

@@ -67,10 +67,13 @@ DEFAULT_CRAM_COLOUR	= LEGEND_COLOUR
 
 	.ORG $C000
 
+_frame_time_code_run:	.RES 32
 os_version:		.RES 4
 hex_buf:		.RES 16
 nvram:			.RES 64
 xemu_id:		.RES 1
+cram_size:		.RES 1
+cram_echo:		.REs 1
 
 
 .SEGMENT "ZEROPAGE"
@@ -402,13 +405,32 @@ addr_to_i2c:
 
 
 
-rtc_update_screen:
+.PROC	rtc_update_screen
 	; Set linear address of RTC stuffs
 	LDA	#$71
 	JSR	addr_to_i2c
 	; Print time
 	LDZ	#$12			; Hours
 	JSR	Lpeek_debounced
+	TAX				; to set flags on Accumulator, ALSO to store original value in X as a backup
+	BMI	@directly_hours		; this checks bit7 of result of Lpeek... (jumps if bit7 is set)
+	AND	#$20
+	BEQ	@not_12_hours
+	TXA
+	AND	#$1F
+	CLC
+	SED
+	ADC	#12
+	CLD
+	BRA	@print_hours
+@not_12_hours:
+	TXA
+	AND	#$1F
+	BRA	@print_hours
+@directly_hours:
+	AND	#$3F
+	; fall-through
+@print_hours:
 	JSR	write_hex_byte
 	JSR	write_blinking_colon
 	DEZ				; mins
@@ -421,8 +443,9 @@ rtc_update_screen:
 	JSR	write_hex_byte
 		LDX	#'R'
 		JSR	update_second_bar
-	JSR	write_space
-	LDZ	#$15			; year
+	; year, start of date, year is also BCD and relative to 2000, so I guess we can print "20" here. Beware, this program may fail on 2100 Jan 01 ;-P
+	WRISTR	" 20"
+	LDZ	#$15
 	JSR	Lpeek_debounced
 	JSR	write_hex_byte
 	LDA	#'-'
@@ -440,12 +463,16 @@ rtc_update_screen:
 	JSR	write_hex_byte
 	LDA	glitch_counter
 	JMP	write_hex_byte
+.ENDPROC
+
 
 ; Input A = BCD value of seconds
 ;       X = char to use
-update_second_bar:
+.PROC	update_second_bar
 	STX	@char
 	JSR	bcd2bin
+		CMP	#60	; make sure not overflow (RTC not presents and reading $FF or whatever)
+		BCS	@ret
 		PHA
 		LDX	#59
 	:	LDA	SEC_BAR_P,X
@@ -459,7 +486,9 @@ update_second_bar:
 		PLX
 	LDA	@char
 	STA	SEC_BAR_P,X
+@ret:
 	RTS
+.ENDPROC
 
 
 ; !!!! Routine excepts first two bytes of addr_p being to set already to DC00 or DD00 values!
@@ -646,9 +675,84 @@ get_scanlines_vic4:
 	LDX	#0
 	RTS
 
+; must be PC independent code, it will be copied over to surely have not page crossing code
+_frame_time_code_start:
+	INX		; n*2 cycles
+	BNE	:+	; n*4-n/256 cycles
+	INY		; (n/256)*2 cycles
+:	CMP	$D012	; n*4 cycles
+	BNE	_frame_time_code_start	; n*4-1 cycles
+	RTS		; m*6 cycles + m*6 cycles for JSR + m*2 cycles for DEA/INA
+_frame_time_code_length = * - _frame_time_code_start + 1
 
 
-get_bram_size:
+.PROC	get_frame_time
+	LDX	#_frame_time_code_length
+:	LDY	_frame_time_code_start - 1,X
+	STY	_frame_time_code_run - 1,X
+	DEX
+	BNE	:-
+	LDY	#0	; make Y zero too (as X is already that, after the loop above)
+	LDA	#64
+	STA	0	; C64 speed
+	LDA	#250
+	; wait for a frame high enough that it can occur without bit8, thus no need to test for bit8 in $D011
+:	CMP	$D012
+	BNE	:-
+	; now waiting for raster one less we were waited, almost a full frame will elapse this way, but more easy to test
+	DEA
+	JSR	_frame_time_code_run
+	; the missing one scanline to wait (probably overkill precision here?!)
+	INA
+	JSR	_frame_time_code_run
+	TYA
+	JSR	write_hex_byte
+	TXA
+	JSR	write_hex_byte
+	LDA	#65	; M65 fast speed
+	STA	0
+	RTS
+.ENDPROC
+
+; This should be from $8000000, test every last byte of megabyte, that is:
+; $8 0f ff ff first, in one Mbyte steps (+ $10 00 00)
+.PROC	get_hram_size
+	LDA	#$FF
+	STA	addr_p
+	STA	addr_p+1
+	LDA	#$0F
+	STA	addr_p+2
+	LDA	#$08
+	STA	addr_p+3
+	LDX	#0
+@mbyte_loop:
+	LDA32Z	addr_p
+	STA	@restore
+	LDA	#0
+@byte_loop:
+	STA32Z	addr_p
+	CMP32Z	addr_p
+	BNE	@no_ram
+	INA
+	BNE	@byte_loop
+	@restore = * + 1
+	LDA	#0
+	STA32Z	addr_p
+	INX		; count mbytes
+	CLC
+	LDA	#$10
+	ADC	addr_p + 2
+	STA	addr_p + 2
+	BCC	@mbyte_loop
+	INC	addr_p + 3
+	BRA	@mbyte_loop
+@no_ram:
+	TXA
+	RTS
+.ENDPROC
+
+
+.PROC	get_bram_size
 	LDA	#$FF
 	STA	addr_p
 	LDA	#$03
@@ -661,6 +765,7 @@ get_bram_size:
 	STZ	num
 	LDA	#1	; 256K already
 	STA	num+1
+	LDZ	#0
 @kbyte_loop:
 	LDA32Z	addr_p
 	STA	@restore
@@ -684,30 +789,30 @@ get_bram_size:
 	LDA	num
 	LDX	num+1
 	RTS
+.ENDPROC
 
 
-update_rom_screen:
-	LDA	#$00
+.PROC	update_rom_screen
+	LDA	#0
 	STA	addr_p
-	STA	addr_p+1
-	LDA	addr_p+3
+	STA	addr_p + 1
+	STA	addr_p + 3
 	LDA	#2
-	STA	addr_p+2
+	STA	addr_p + 2
 	; Test ROM write protection
 	LDZ	#$16
+	LDX	#'O'
 	WRISTR	"R/"
 	LDA32Z	addr_p
 	INA
 	STA32Z	addr_p
-	CMP32Z	addr_p
-	PHP
 	DEA
-	STA32Z	addr_p
-	LDA	#'W'
-	PLP
+	CMP32Z	addr_p
 	BEQ	:+
-	LDA	#'O'
-:	JSR	write_char
+	STA32Z	addr_p
+	LDX	#'W'
+:	TXA
+	JSR	write_char
 	; Test if ROM has the "version signature" typical for C65 ROMs
 	LDA32Z	addr_p
 	CMP	#'V'
@@ -717,7 +822,7 @@ update_rom_screen:
 	INZ
 	CMP	#'0'
 	BCC	@no_c65_rom
-	CMP	#'9'+1
+	CMP	#'9' + 1
 	BCS	@no_c65_rom
 	CPZ	#$16 + 7
 	BNE	:-
@@ -726,72 +831,95 @@ update_rom_screen:
 :	LDA32Z	addr_p
 	JSR	write_char
 	INZ
-	CPZ	#$16+7
+	CPZ	#$16 + 7
 	BNE	:-
 	RTS
 @no_c65_rom:
 	WRISTR	" non-C65"
 	RTS
-
-
-test_cram:
-	RTS
-	LDZ	#0
-	STZ	colour_pos_addr
-	STZ	colour_pos_addr+1
-	TZA
-	STA32Z	colour_pos_addr
-;	LDA	
+.ENDPROC
 
 
 
-clear_screen:
-	JSR	home
+.PROC	clear_screen
 	PHA
 	PHX
 	PHZ
+	; set default values for pointers
 	LDZ	#0
+	STZ	cram_echo		; flag, initially zero
+	STZ	screen_pos_addr
+	STZ	colour_pos_addr
+	LDA	#VID_MEM_PAGE
+	STA	screen_pos_addr+1
+	; Test colour RAM size, it can be only 32K or 64K.
+	; Set first byte of colour RAM to a known state. We do this via the I/O area, so we don't need to worry about setting ZP things for the long address mode back and forth
+	LDA	#$80
+	STA	colour_pos_addr+1	; set colour_pos_addr to the second 32K of colour RAM
+	TZA
+@test_cram:
+	STA	$D800			; set some value for the first byte of first 32K
+	DEA				; user ANOTHER value for ...
+	STA32Z	colour_pos_addr		; .. the first byte of second 32K
+	CMP32Z	colour_pos_addr		; test if the later was OK
+	BNE	@k32			; if not, only 32K colour RAM
+	CMP	$D800			; compare with the first byte of first 32K
+	BEQ	@k32_echo		; if matches, it's still 32K just we see not fully decoded colour RAM
+	INA
+	INA
+	BNE	@test_cram
+	LDA	#64
+	STA	cram_size
+	BRA	@end_cram_test
+@k32_echo:
+	INC	cram_echo
+	; fall-through
+@k32:
+	LDA	#32
+	STA	cram_size
+@end_cram_test:
+	STZ	colour_pos_addr+1	; restore the colour RAM pointer to the beginning of the colour RAM for writer functions
+	; Clear screen and video RAM
 	LDX	#8
-:	LDA	#DEFAULT_CRAM_COLOUR
+@clear_loop:
+	LDA	#DEFAULT_CRAM_COLOUR
 	STA32Z	colour_pos_addr
 	LDA	#32
 	STA	(screen_pos_addr),Z
 	INZ
-	BNE	:-
+	BNE	@clear_loop
 	INC	colour_pos_addr+1
 	INC	screen_pos_addr+1
 	DEX
-	BNE	:-
+	BNE	@clear_loop
+	JSR	write_inline_string
+	.BYTE	ITOK_COLOUR TEXT_COLOUR ; set some intial colour
+	.BYTE	ITOK_XY 0,0		; set some intial position
+	.BYTE	0
 	PLZ
 	PLX
 	PLA
-	; fall-through!
-home:
-	PHA
-	LDA	#0
-	STA	colour_pos_addr
-	STA	screen_pos_addr
-	STA	colour_pos_addr+1
-	LDA	#VID_MEM_PAGE
-	STA	screen_pos_addr+1
-	PLA
 	RTS
+.ENDPROC
 
-clear_screen_with_logo:
+
+.PROC	clear_screen_with_logo
 	JSR	clear_screen
 	JSR	write_inline_string
-	.BYTE	ITOK_XY 1,0
-	.BYTE	"MEGA65info v0.0.1"
+	.BYTE	" MEGA65info v0.0.2"
 	.BYTE	ITOK_XY 55,0
 	.BYTE	"(C)2020 LGB Gabor Lenart"
-	.BYTE	ITOK_COLOUR TEXT_COLOUR
 	.BYTE	0
+	; Cheating: though all char funcs has colour as well, we force colours as at our own here by writing
+	; colour RAM. This is because we have speciality here for the header line, also save code size not
+	; to write all the spaces/etc needed as well.
 	LDA	#BANNER_COLOUR
 	LDX	#79
 :	STA	$D800,X
 	DEX
 	BPL	:-
 	RTS
+.ENDPROC
 
 
 hex_dump:
@@ -1040,6 +1168,9 @@ hex_dump_mode:
 	STA	dump_start_p
 	JMP	@dump
 @input_addr_backspace:
+	LDA	dump_start_p+3
+	AND	#$F
+	STA	dump_start_p+3
 	LDX	#4
 :	CLC
 	ROR	dump_start_p+3
@@ -1114,7 +1245,7 @@ main:
 	SEI
 	; Set initial hexdump addr for hexdump mode
 	SET_HEXDUMP_ADDR_FROM_CONST zero
-	; MEGA65 FAST mode
+	; MEGA65 FAST mode, TODO make sure M65 fast speed is turned off though by the other way so we can easily drop to ~1Mhz when needed
 	LDA	#65
 	STA	0
 	; Set NMI handler (user may hit RESTORE). It "write through" the ROM, no problem.
@@ -1164,14 +1295,15 @@ main:
 	STA	colour_pos_addr+3
 	LDA	#$F8
 	STA	colour_pos_addr+2
-	; OK, if we are here at least, it's a better time to test colour RAM, we want later not to mess up (also for the pointers ...)
-	JSR	test_cram
 	; Empty hardware accelerated kbd scanner queue
 :	LDA	$D610
 	STA	$D610
 	BNE	:-
 
 @main_screen_start:
+	; TODO: turn of screen, while all the screen is updated, and to provide accurate measurements
+
+
 	LDA	#%01111111
 	STA	$DC0D		; turn off CIA1 IRQs
 	AND	$D011
@@ -1248,6 +1380,8 @@ main:
 @not_xemu:
 	WRISTR	"no"
 @was_xemu:
+						;WRISTR	"frametime:"
+						;JSR	get_frame_time
 	;
 	; *** HYPPO version trap result ***
 	;
@@ -1283,14 +1417,34 @@ main:
 	LDA	#'K'
 	JSR	write_char
 	;
+	; *** CRAM size ***
+	;
+	TITLE	1,7,"CRAM "
+	LDA	cram_size	; CRAM size is tested/stored by clear screen! So we just fetch the result here
+	JSR	write_dec_byte
+	LDA	#'K'
+	JSR	write_char
+	LDA	cram_echo
+	BEQ	:+
+	WRISTR	" +echo"
+:
+	;
+	; *** HRAM ***
+	;
+	TITLE	1,8,"HRAM "
+	JSR	get_hram_size
+	JSR	write_dec_byte
+	LDA	#'M'
+	JSR	write_char
+	;
 	; *** ROM ***
 	;
-	TITLE	1,7,"ROM  "
+	TITLE	1,9,"ROM  "
 	JSR	update_rom_screen
 	;
 	; *** UUID ***
 	;
-	TITLE	1,8,"UUID "
+	TITLE	1,10,"UUID "
 	LDA	#$71
 	JSR	addr_to_i2c
 	LDZ	#0
@@ -1302,7 +1456,7 @@ main:
 	;
 	; *** MAC ***
 	;
-	TITLE	1,9,"MAC  "
+	TITLE	1,11,"MAC  "
 	LDX	#0
 :	LDA	$D6E9,X
 	JSR	write_hex_byte
@@ -1342,6 +1496,7 @@ main:
 	LDA	$D610
 	BEQ	@kbd_loop
 	STA	$D610
+	SEI
 	;			JSR	write_inline_string
 	;			.BYTE	ITOK_XY 78,0
 	;			.BYTE	0
