@@ -1,5 +1,9 @@
 # Ethernet test-program for Mega65
 
+Old demo: https://www.youtube.com/watch?v=MdXE_Dwn2yc
+
+**WARNING** old code, won't run on decent MEGA65s, it was written in 2019/2018 or so, and incomplete!!!
+
 You can download (probably not the latest version you could get by compiling the source yourself!) a compiled version as a PRG or D81 from the `bin/` directory can be
 found here: https://github.com/lgblgblgb/mega65-utils/tree/master/eth-tool/bin
 
